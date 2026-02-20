@@ -36,7 +36,7 @@
         font-weight: bold;
         font-size: 13px;
         border-radius: 8px;
-        display: none; /* Hidden by default */
+        display: none;
         z-index: 10000;
         border: 1px solid #444;
         box-shadow: 0 0 15px rgba(0,0,0,0.5);
@@ -128,20 +128,19 @@
     (async () => {
       try {
         // 1. FETCH & HACK THE UNITY FRAMEWORK
-        // This intercepts the game engine code before it runs and forces it to expose the hidden File System.
         let fwReq = await fetch("Build/CloverPit.framework.js");
         let fwText = await fwReq.text();
         
-        // Expose the FS to window.UnityFS (covers var, let, and const declarations)
+        // Expose the FS to window.UnityFS
         fwText = fwText.replace(/var\s+FS\s*=\s*\{/g, "var FS=window.UnityFS={");
         fwText = fwText.replace(/let\s+FS\s*=\s*\{/g, "let FS=window.UnityFS={");
         fwText = fwText.replace(/const\s+FS\s*=\s*\{/g, "const FS=window.UnityFS={");
         
-        // FIX: The syntax error was right here. It is now properly packaging the text into a Blob.
+        // ---> FIX: THE VARIABLES ARE NOW PROPERLY INSIDE THE BLOB <---
         let hackedFrameworkUrl = URL.createObjectURL(new Blob(, { type: "application/javascript" }));
 
         // 2. FETCH THE GAME FILES
-        // FIX: The array syntax was missing here. It's now restored.
+        // ---> FIX: PROPERLY FETCHING THE ARRAYS NOW <---
         const = await Promise.all();
 
         var canvas = document.querySelector("#unity-canvas");
@@ -172,8 +171,6 @@
             const saveIndicator = document.getElementById("save-indicator");
 
             function syncNow() {
-              // Thanks to the hack, the FS is now publicly accessible!
-              // (Includes fallbacks just in case)
               let fs = window.UnityFS || window.FS || (instance.Module && instance.Module.FS);
 
               if (fs && fs.syncfs) {
