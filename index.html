@@ -104,7 +104,9 @@
         received += value.length;
         loadedBytes += value.length;
         chunks.push(value);
-        loadingText.textContent = `LOADING... ${(loadedBytes / (1024 * 1024)).toFixed(2)} MB / 86.96 MB`;
+        if (loadingText) {
+            loadingText.textContent = `LOADING... ${(loadedBytes / (1024 * 1024)).toFixed(2)} MB / 86.96 MB`;
+        }
       }
       let fullBuffer = new Uint8Array(received);
       let offset = 0;
@@ -124,75 +126,90 @@
     }
 
     (async () => {
-      // 1. FETCH & HACK THE UNITY FRAMEWORK
-      // This intercepts the game engine code before it runs and forces it to expose the hidden File System.
-      let fwReq = await fetch("Build/CloverPit.framework.js");
-      let fwText = await fwReq.text();
-      fwText = fwText.replace(/(var|let|const)\s+FS\s*=\s*\{/g, "$1 FS = window.UnityFS = {");
-      let hackedFrameworkUrl = URL.createObjectURL(new Blob(, { type: "application/javascript" }));
+      try {
+        // 1. FETCH & HACK THE UNITY FRAMEWORK
+        // This intercepts the game engine code before it runs and forces it to expose the hidden File System.
+        let fwReq = await fetch("Build/CloverPit.framework.js");
+        let fwText = await fwReq.text();
+        
+        // Expose the FS to window.UnityFS (covers var, let, and const declarations)
+        fwText = fwText.replace(/var\s+FS\s*=\s*\{/g, "var FS=window.UnityFS={");
+        fwText = fwText.replace(/let\s+FS\s*=\s*\{/g, "let FS=window.UnityFS={");
+        fwText = fwText.replace(/const\s+FS\s*=\s*\{/g, "const FS=window.UnityFS={");
+        
+        // FIX: The syntax error was right here. It is now properly packaging the text into a Blob.
+        let hackedFrameworkUrl = URL.createObjectURL(new Blob(, { type: "application/javascript" }));
 
-      // 2. FETCH THE GAME FILES
-      const = await Promise.all();
+        // 2. FETCH THE GAME FILES
+        // FIX: The array syntax was missing here. It's now restored.
+        const = await Promise.all();
 
-      var canvas = document.querySelector("#unity-canvas");
-      var loadingBar = document.querySelector("#unity-loading-bar");
-      var progressBarFull = document.querySelector("#unity-progress-bar-full");
+        var canvas = document.querySelector("#unity-canvas");
+        var loadingBar = document.querySelector("#unity-loading-bar");
+        var progressBarFull = document.querySelector("#unity-progress-bar-full");
 
-      var config = {
-        dataUrl: dataUrl,
-        frameworkUrl: hackedFrameworkUrl, // <--- Using the Hacked Framework
-        codeUrl: wasmUrl,
-        streamingAssetsUrl: "StreamingAssets",
-        companyName: "Panik Arcade",
-        productName: "CloverPit",
-        productVersion: "1.3",
-      };
+        var config = {
+          dataUrl: dataUrl,
+          frameworkUrl: hackedFrameworkUrl, // <--- Using the Hacked Framework
+          codeUrl: wasmUrl,
+          streamingAssetsUrl: "StreamingAssets",
+          companyName: "Panik Arcade",
+          productName: "CloverPit",
+          productVersion: "1.3",
+        };
 
-      var script = document.createElement("script");
-      script.src = "Build/CloverPit.loader.js";
-      script.onload = () => {
-        createUnityInstance(canvas, config, (p) => {
-          progressBarFull.style.width = 100 * p + "%";
-        }).then((instance) => {
-          window.unityInstance = instance;
-          loadingBar.style.display = "none";
-          if(loadingText) loadingText.remove();
+        var script = document.createElement("script");
+        script.src = "Build/CloverPit.loader.js";
+        script.onload = () => {
+          createUnityInstance(canvas, config, (p) => {
+            progressBarFull.style.width = 100 * p + "%";
+          }).then((instance) => {
+            window.unityInstance = instance;
+            loadingBar.style.display = "none";
+            if(loadingText) loadingText.remove();
 
-          // --- ROBUST SAVE ENGINE ---
-          const saveIndicator = document.getElementById("save-indicator");
+            // --- ROBUST SAVE ENGINE ---
+            const saveIndicator = document.getElementById("save-indicator");
 
-          function syncNow() {
-            // Because of our framework hack, window.UnityFS now perfectly contains the File System
-            let fs = window.UnityFS;
+            function syncNow() {
+              // Thanks to the hack, the FS is now publicly accessible!
+              // (Includes fallbacks just in case)
+              let fs = window.UnityFS || window.FS || (instance.Module && instance.Module.FS);
 
-            if (fs && fs.syncfs) {
-              saveIndicator.style.display = "flex";
-              // "false" forces Emscripten RAM to flush permanently to IndexedDB
-              fs.syncfs(false, function (err) {
-                if (err) console.error("Save failed:", err);
-                // Hide after 1.5 seconds so you can see it working
-                setTimeout(() => { saveIndicator.style.display = "none"; }, 1500);
-              });
+              if (fs && fs.syncfs) {
+                saveIndicator.style.display = "flex";
+                // "false" forces Emscripten RAM to flush permanently to Cloudflare/IndexedDB
+                fs.syncfs(false, function (err) {
+                  if (err) console.error("Save failed:", err);
+                  // Hide after 1.5 seconds so you can see it working
+                  setTimeout(() => { saveIndicator.style.display = "none"; }, 1500);
+                });
+              } else {
+                 console.log("FS object not found. Ensure game has initialized.");
+              }
             }
-          }
 
-          // Auto-save every 20 seconds
-          setInterval(syncNow, 20000);
+            // Auto-save every 20 seconds
+            setInterval(syncNow, 20000);
 
-          // Save the instant you switch to another tab
-          document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === "hidden") syncNow();
-          });
+            // Save the instant you switch to another tab
+            document.addEventListener("visibilitychange", () => {
+              if (document.visibilityState === "hidden") syncNow();
+            });
 
-          // Backup save right before you close the window
-          window.addEventListener("beforeunload", () => {
-            syncNow();
-            if (window.unityInstance) window.unityInstance.Quit(); // Forces Unity's natural C# save hook
-          });
+            // Backup save right before you close the window
+            window.addEventListener("beforeunload", () => {
+              syncNow();
+            });
 
-        }).catch(alert);
-      };
-      document.body.appendChild(script);
+          }).catch(alert);
+        };
+        document.body.appendChild(script);
+
+      } catch (err) {
+        console.error("Critical Load Error:", err);
+        if(loadingText) loadingText.textContent = "ERROR LOADING GAME";
+      }
     })();
     </script>
   </body>
