@@ -17,9 +17,9 @@
         background: rgba(0, 0, 0, 0.7);
         padding: 4px 8px;
         font-family: monospace;
-        font-size: 12px;
+        font-size: 13px;
         z-index: 10001;
-        border-radius: 3px;
+        border-radius: 4px;
         border: 1px solid #333;
         pointer-events: none;
       }
@@ -41,13 +41,12 @@
         border: 1px solid #444;
         box-shadow: 0 0 15px rgba(0,0,0,0.5);
         align-items: center;
-        transition: opacity 0.3s;
       }
 
       .save-spinner {
         width: 14px;
         height: 14px;
-        border: 2px solid #3498db;
+        border: 2px solid #34db66;
         border-top: 2px solid transparent;
         border-radius: 50%;
         margin-right: 12px;
@@ -58,8 +57,9 @@
     </style>
   </head>
   <body>
+    <!-- UI ELEMENTS -->
     <div id="fps-counter">FPS: 0</div>
-    <div id="save-indicator"><div class="save-spinner"></div>SAVING TO CLOUD...</div>
+    <div id="save-indicator"><div class="save-spinner"></div>SAVING PROGRESS...</div>
 
     <div id="loading-text" style="color: white; font-size: 48px; font-family: cursive; text-align: center; margin-top: 20px;"> LOADING... </div>
     
@@ -92,11 +92,11 @@
     }
     updateFPS();
 
-    // --- FILE LOADER ---
+    // --- FILE LOADER & MERGER ---
     async function fetchWithProgress(url) {
       const response = await fetch(url);
       const reader = response.body.getReader();
-      let chunks = [];
+      let chunks =[];
       let received = 0;
       while (true) {
         const { done, value } = await reader.read();
@@ -108,10 +108,7 @@
       }
       let fullBuffer = new Uint8Array(received);
       let offset = 0;
-      for (let chunk of chunks) {
-        fullBuffer.set(chunk, offset);
-        offset += chunk.length;
-      }
+      for (let chunk of chunks) { fullBuffer.set(chunk, offset); offset += chunk.length; }
       return fullBuffer.buffer;
     }
 
@@ -120,11 +117,22 @@
       return URL.createObjectURL(new Blob(buffers));
     }
 
+    function getParts(file, start, end) {
+      let parts =[];
+      for (let i = start; i <= end; i++) parts.push(file + ".part" + i);
+      return parts;
+    }
+
     (async () => {
-      const [dataUrl, wasmUrl] = await Promise.all([
-        mergeFiles(["Build/CloverPit.data.part1", "Build/CloverPit.data.part2", "Build/CloverPit.data.part3"]),
-        mergeFiles(["Build/CloverPit.wasm.part1", "Build/CloverPit.wasm.part2", "Build/CloverPit.wasm.part3"]),
-      ]);
+      // 1. FETCH & HACK THE UNITY FRAMEWORK
+      // This intercepts the game engine code before it runs and forces it to expose the hidden File System.
+      let fwReq = await fetch("Build/CloverPit.framework.js");
+      let fwText = await fwReq.text();
+      fwText = fwText.replace(/(var|let|const)\s+FS\s*=\s*\{/g, "$1 FS = window.UnityFS = {");
+      let hackedFrameworkUrl = URL.createObjectURL(new Blob(, { type: "application/javascript" }));
+
+      // 2. FETCH THE GAME FILES
+      const = await Promise.all();
 
       var canvas = document.querySelector("#unity-canvas");
       var loadingBar = document.querySelector("#unity-loading-bar");
@@ -132,7 +140,7 @@
 
       var config = {
         dataUrl: dataUrl,
-        frameworkUrl: "Build/CloverPit.framework.js",
+        frameworkUrl: hackedFrameworkUrl, // <--- Using the Hacked Framework
         codeUrl: wasmUrl,
         streamingAssetsUrl: "StreamingAssets",
         companyName: "Panik Arcade",
@@ -146,42 +154,41 @@
         createUnityInstance(canvas, config, (p) => {
           progressBarFull.style.width = 100 * p + "%";
         }).then((instance) => {
-          window.unityInstance = instance; // Expose globally
+          window.unityInstance = instance;
           loadingBar.style.display = "none";
-          loadingText.remove();
+          if(loadingText) loadingText.remove();
 
           // --- ROBUST SAVE ENGINE ---
           const saveIndicator = document.getElementById("save-indicator");
 
           function syncNow() {
-            // Find the FS object wherever it may be hidden
-            let fs = null;
-            try {
-              fs = window.FS || instance.Module.FS || (instance.container ? instance.container.FS : null);
-            } catch(e) {}
+            // Because of our framework hack, window.UnityFS now perfectly contains the File System
+            let fs = window.UnityFS;
 
             if (fs && fs.syncfs) {
               saveIndicator.style.display = "flex";
-              // false = from RAM to Browser Storage
+              // "false" forces Emscripten RAM to flush permanently to IndexedDB
               fs.syncfs(false, function (err) {
-                if (err) console.warn("Save failed:", err);
+                if (err) console.error("Save failed:", err);
+                // Hide after 1.5 seconds so you can see it working
                 setTimeout(() => { saveIndicator.style.display = "none"; }, 1500);
               });
-            } else {
-              console.log("Searching for FS...");
             }
           }
 
-          // Save every 20 seconds
+          // Auto-save every 20 seconds
           setInterval(syncNow, 20000);
 
-          // Save when user switches tabs (very reliable)
+          // Save the instant you switch to another tab
           document.addEventListener("visibilitychange", () => {
             if (document.visibilityState === "hidden") syncNow();
           });
 
-          // Save on close
-          window.addEventListener("beforeunload", syncNow);
+          // Backup save right before you close the window
+          window.addEventListener("beforeunload", () => {
+            syncNow();
+            if (window.unityInstance) window.unityInstance.Quit(); // Forces Unity's natural C# save hook
+          });
 
         }).catch(alert);
       };
