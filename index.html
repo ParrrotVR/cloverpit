@@ -1,213 +1,151 @@
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-L7856P3VNT"></script>
+<script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    gtag('js', new Date());
+
+    gtag('config', 'G-L7856P3VNT');
+</script>
 <!DOCTYPE html>
 <html lang="en-us">
-  <head>
+
+<head>
     <base href="https://cdn.jsdelivr.net/gh/web-ports/clover-pit@main/">
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <title>Clover Pit | Save Enabled</title>
+    <title>Unity Web Player | CloverPit</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
     <link rel="stylesheet" href="TemplateData/style.css">
-    <style>
-      /* FPS COUNTER - TOP LEFT */
-      #fps-counter {
-        position: fixed;
-        top: 10px;
-        left: 10px;
-        color: #00ff00;
-        background: rgba(0, 0, 0, 0.7);
-        padding: 4px 8px;
-        font-family: monospace;
-        font-size: 13px;
-        z-index: 10001;
-        border-radius: 4px;
-        border: 1px solid #333;
-        pointer-events: none;
-      }
+</head>
 
-      /* SAVE INDICATOR - BOTTOM RIGHT */
-      #save-indicator {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        background: rgba(0, 0, 0, 0.85);
-        color: white;
-        padding: 12px 20px;
-        font-family: sans-serif;
-        font-weight: bold;
-        font-size: 13px;
-        border-radius: 8px;
-        display: none;
-        z-index: 10000;
-        border: 1px solid #444;
-        box-shadow: 0 0 15px rgba(0,0,0,0.5);
-        align-items: center;
-      }
-
-      .save-spinner {
-        width: 14px;
-        height: 14px;
-        border: 2px solid #34db66;
-        border-top: 2px solid transparent;
-        border-radius: 50%;
-        margin-right: 12px;
-        animation: spin 0.8s linear infinite;
-      }
-
-      @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
-  </head>
-  <body>
-    <!-- UI ELEMENTS -->
-    <div id="fps-counter">FPS: 0</div>
-    <div id="save-indicator"><div class="save-spinner"></div>SAVING PROGRESS...</div>
-
-    <div id="loading-text" style="color: white; font-size: 48px; font-family: cursive; text-align: center; margin-top: 20px;"> LOADING... </div>
-    
-    <div id="unity-container">
-      <canvas id="unity-canvas" width=960 height=540 tabindex="-1"></canvas>
-      <div id="unity-loading-bar">
-        <div id="unity-logo"></div>
-        <div id="unity-progress-bar-empty">
-          <div id="unity-progress-bar-full"></div>
-        </div>
-      </div>
+<body>
+    <div id="loading-text"
+        style="color: white; font-size: 48px; font-family: cursive; text-align: center; margin-top: 20px;"> LOADING...
     </div>
-
+    <div id="unity-container">
+        <canvas id="unity-canvas" width=960 height=540 tabindex="-1"></canvas>
+        <div id="unity-loading-bar">
+            <div id="unity-logo"></div>
+            <div id="unity-progress-bar-empty">
+                <div id="unity-progress-bar-full"></div>
+            </div>
+        </div>
+        <div id="unity-warning"> </div>
+    </div>
     <script>
-    var loadingText = document.querySelector("#loading-text");
-    let loadedBytes = 0;
+        var loadingText = document.querySelector("#loading-text");
+        let totalBytes = 0;
+        let loadedBytes = 0;
 
-    // --- FPS TRACKER ---
-    let frameCount = 0;
-    let lastTime = performance.now();
-    function updateFPS() {
-      frameCount++;
-      const now = performance.now();
-      if (now >= lastTime + 1000) {
-        document.getElementById("fps-counter").innerText = `FPS: ${frameCount}`;
-        frameCount = 0;
-        lastTime = now;
-      }
-      requestAnimationFrame(updateFPS);
-    }
-    updateFPS();
-
-    // --- FILE LOADER & MERGER ---
-    async function fetchWithProgress(url) {
-      const response = await fetch(url);
-      const reader = response.body.getReader();
-      let chunks =[];
-      let received = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        received += value.length;
-        loadedBytes += value.length;
-        chunks.push(value);
-        if (loadingText) {
-            loadingText.textContent = `LOADING... ${(loadedBytes / (1024 * 1024)).toFixed(2)} MB / 86.96 MB`;
+        async function fetchWithProgress(url) {
+            const response = await fetch(url);
+            const reader = response.body.getReader();
+            let chunks = [];
+            let received = 0;
+            while (true) {
+                const {
+                    done,
+                    value
+                } = await reader.read();
+                if (done) break;
+                received += value.length;
+                loadedBytes += value.length;
+                chunks.push(value);
+                let mbDone = (loadedBytes / (1024 * 1024)).toFixed(2);
+                let mbTotal = '86.96';
+                loadingText.textContent = `LOADING... ${mbDone} MB / ${mbTotal} MB`;
+            }
+            let fullBuffer = new Uint8Array(received);
+            let offset = 0;
+            for (let chunk of chunks) {
+                fullBuffer.set(chunk, offset);
+                offset += chunk.length;
+            }
+            return fullBuffer.buffer;
         }
-      }
-      let fullBuffer = new Uint8Array(received);
-      let offset = 0;
-      for (let chunk of chunks) { fullBuffer.set(chunk, offset); offset += chunk.length; }
-      return fullBuffer.buffer;
-    }
 
-    async function mergeFiles(fileParts) {
-      const buffers = await Promise.all(fileParts.map(part => fetchWithProgress(part)));
-      return URL.createObjectURL(new Blob(buffers));
-    }
+        async function mergeFiles(fileParts, cacheKey) {
+            const buffers = await Promise.all(
+                fileParts.map(part => fetchWithProgress(part))
+            );
+            const mergedBlob = new Blob(buffers);
+            return URL.createObjectURL(mergedBlob);
+        }
 
-    function getParts(file, start, end) {
-      let parts =[];
-      for (let i = start; i <= end; i++) parts.push(file + ".part" + i);
-      return parts;
-    }
+        function getParts(file, start, end) {
+            let parts = [];
+            for (let i = start; i <= end; i++) {
+                parts.push(file + ".part" + i);
+            }
+            return parts;
+        }
+        (async () => {
+            const [dataUrl, wasmUrl] = await Promise.all([
+                mergeFiles(getParts("Build/CloverPit.data", 1, 3), "CloverPit.data"),
+                mergeFiles(getParts("Build/CloverPit.wasm", 1, 3), "CloverPit.wasm"),
+            ]);
 
-    (async () => {
-      try {
-        // 1. FETCH & HACK THE UNITY FRAMEWORK
-        let fwReq = await fetch("Build/CloverPit.framework.js");
-        let fwText = await fwReq.text();
-        
-        // Expose the FS to window.UnityFS
-        fwText = fwText.replace(/var\s+FS\s*=\s*\{/g, "var FS=window.UnityFS={");
-        fwText = fwText.replace(/let\s+FS\s*=\s*\{/g, "let FS=window.UnityFS={");
-        fwText = fwText.replace(/const\s+FS\s*=\s*\{/g, "const FS=window.UnityFS={");
-        
-        // ---> FIX: THE VARIABLES ARE NOW PROPERLY INSIDE THE BLOB <---
-        let hackedFrameworkUrl = URL.createObjectURL(new Blob(, { type: "application/javascript" }));
+            var container = document.querySelector("#unity-container");
+            var canvas = document.querySelector("#unity-canvas");
+            var loadingBar = document.querySelector("#unity-loading-bar");
+            var progressBarFull = document.querySelector("#unity-progress-bar-full");
+            var warningBanner = document.querySelector("#unity-warning");
 
-        // 2. FETCH THE GAME FILES
-        // ---> FIX: PROPERLY FETCHING THE ARRAYS NOW <---
-        const = await Promise.all();
-
-        var canvas = document.querySelector("#unity-canvas");
-        var loadingBar = document.querySelector("#unity-loading-bar");
-        var progressBarFull = document.querySelector("#unity-progress-bar-full");
-
-        var config = {
-          dataUrl: dataUrl,
-          frameworkUrl: hackedFrameworkUrl, // <--- Using the Hacked Framework
-          codeUrl: wasmUrl,
-          streamingAssetsUrl: "StreamingAssets",
-          companyName: "Panik Arcade",
-          productName: "CloverPit",
-          productVersion: "1.3",
-        };
-
-        var script = document.createElement("script");
-        script.src = "Build/CloverPit.loader.js";
-        script.onload = () => {
-          createUnityInstance(canvas, config, (p) => {
-            progressBarFull.style.width = 100 * p + "%";
-          }).then((instance) => {
-            window.unityInstance = instance;
-            loadingBar.style.display = "none";
-            if(loadingText) loadingText.remove();
-
-            // --- ROBUST SAVE ENGINE ---
-            const saveIndicator = document.getElementById("save-indicator");
-
-            function syncNow() {
-              let fs = window.UnityFS || window.FS || (instance.Module && instance.Module.FS);
-
-              if (fs && fs.syncfs) {
-                saveIndicator.style.display = "flex";
-                // "false" forces Emscripten RAM to flush permanently to Cloudflare/IndexedDB
-                fs.syncfs(false, function (err) {
-                  if (err) console.error("Save failed:", err);
-                  // Hide after 1.5 seconds so you can see it working
-                  setTimeout(() => { saveIndicator.style.display = "none"; }, 1500);
-                });
-              } else {
-                 console.log("FS object not found. Ensure game has initialized.");
-              }
+            // Shows a temporary message banner/ribbon for a few seconds, or
+            // a permanent error message on top of the canvas if type=='error'.
+            // If type=='warning', a yellow highlight color is used.
+            // Modify or remove this function to customize the visually presented
+            // way that non-critical warnings and error messages are presented to the
+            // user.
+            function unityShowBanner(msg, type) {
             }
 
-            // Auto-save every 20 seconds
-            setInterval(syncNow, 20000);
+            var buildUrl = "Build";
+            var loaderUrl = buildUrl + "/CloverPit.loader.js";
+            var config = {
+                arguments: [],
+                dataUrl: dataUrl,
+                frameworkUrl: buildUrl + "/CloverPit.framework.js",
+                codeUrl: wasmUrl,
+                streamingAssetsUrl: "StreamingAssets",
+                companyName: "Panik Arcade",
+                productName: "CloverPit",
+                productVersion: "1.3",
+                showBanner: unityShowBanner,
+            };
 
-            // Save the instant you switch to another tab
-            document.addEventListener("visibilitychange", () => {
-              if (document.visibilityState === "hidden") syncNow();
-            });
+            // By default Unity keeps WebGL canvas render target size matched with
+            // the DOM size of the canvas element (scaled by window.devicePixelRatio)
+            // Set this to false if you want to decouple this synchronization from
+            // happening inside the engine, and you would instead like to size up
+            // the canvas DOM size and WebGL render target sizes yourself.
+            // config.matchWebGLToCanvasSize = false;
 
-            // Backup save right before you close the window
-            window.addEventListener("beforeunload", () => {
-              syncNow();
-            });
+            if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+                // Mobile device style: fill the whole browser client area with the game canvas:
+                var meta = document.createElement('meta');
+                meta.name = 'viewport';
+                meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
+                document.getElementsByTagName('head')[0].appendChild(meta);
+            }
 
-          }).catch(alert);
-        };
-        document.body.appendChild(script);
 
-      } catch (err) {
-        console.error("Critical Load Error:", err);
-        if(loadingText) loadingText.textContent = "ERROR LOADING GAME";
-      }
-    })();
+            loadingBar.style.display = "block";
+
+            var script = document.createElement("script");
+            script.src = loaderUrl;
+            script.onload = () => {
+                createUnityInstance(canvas, config, (progress) => {
+                    progressBarFull.style.width = 100 * progress + "%";
+                }).then((unityInstance) => {
+                    loadingBar.style.display = "none";
+                    loadingText.remove();
+                }).catch((message) => {
+                });
+            };
+            document.body.appendChild(script);
+        })();
     </script>
-  </body>
+</body>
+
 </html>
