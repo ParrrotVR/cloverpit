@@ -16,9 +16,52 @@
     <title>Unity Web Player | CloverPit</title>
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
     <link rel="stylesheet" href="TemplateData/style.css">
+    <style>
+        /* Save Indicator Styles */
+        #save-indicator {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-weight: bold;
+            font-size: 16px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            opacity: 0;
+            transform: translateY(-20px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+            pointer-events: none;
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #save-indicator.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        #save-indicator svg {
+            width: 20px;
+            height: 20px;
+        }
+    </style>
 </head>
 
 <body>
+    <!-- Save Indicator Element -->
+    <div id="save-indicator">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"
+            stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        SAVED
+    </div>
+
     <div id="loading-text"
         style="color: white; font-size: 48px; font-family: cursive; text-align: center; margin-top: 20px;"> LOADING...
     </div>
@@ -33,6 +76,47 @@
         <div id="unity-warning"> </div>
     </div>
     <script>
+        // --- Save Indicator & Auto-Save Logic ---
+        const saveIndicator = document.getElementById('save-indicator');
+        let saveTimeout;
+
+        function showSaveIndicator() {
+            saveIndicator.classList.add('visible');
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                saveIndicator.classList.remove('visible');
+            }, 2000);
+        }
+
+        // Monitor IndexedDB writes (used by Unity for saving)
+        // This will trigger the indicator whenever the game naturally saves.
+        const originalPut = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) {
+            // We use a short timeout to avoid blocking the DB operation and to debounce slightly if needed
+            setTimeout(() => showSaveIndicator(), 10);
+            return originalPut.apply(this, args);
+        };
+
+        // Listen for "I" key to force sync/save
+        window.addEventListener('keydown', (ev) => {
+            // Check if 'I' is pressed (case insensitive) and make sure we aren't typing in an input
+            if (ev.key.toLowerCase() === 'i' && ev.target.tagName !== 'INPUT' && ev.target.tagName !== 'TEXTAREA') {
+                if (window.unityInstance && window.unityInstance.Module && window.unityInstance.Module.FS) {
+                    console.log("[Auto-Save] Forcing filesystem sync...");
+                    // 'false' means sync from memory to DB (persist)
+                    window.unityInstance.Module.FS.syncfs(false, (err) => {
+                        if (err) {
+                            console.error("[Auto-Save] Sync failed:", err);
+                        } else {
+                            console.log("[Auto-Save] Sync successful");
+                            showSaveIndicator();
+                        }
+                    });
+                }
+            }
+        });
+        // ----------------------------------------
+
         var loadingText = document.querySelector("#loading-text");
         let totalBytes = 0;
         let loadedBytes = 0;
@@ -91,12 +175,6 @@
             var progressBarFull = document.querySelector("#unity-progress-bar-full");
             var warningBanner = document.querySelector("#unity-warning");
 
-            // Shows a temporary message banner/ribbon for a few seconds, or
-            // a permanent error message on top of the canvas if type=='error'.
-            // If type=='warning', a yellow highlight color is used.
-            // Modify or remove this function to customize the visually presented
-            // way that non-critical warnings and error messages are presented to the
-            // user.
             function unityShowBanner(msg, type) {
             }
 
@@ -114,15 +192,7 @@
                 showBanner: unityShowBanner,
             };
 
-            // By default Unity keeps WebGL canvas render target size matched with
-            // the DOM size of the canvas element (scaled by window.devicePixelRatio)
-            // Set this to false if you want to decouple this synchronization from
-            // happening inside the engine, and you would instead like to size up
-            // the canvas DOM size and WebGL render target sizes yourself.
-            // config.matchWebGLToCanvasSize = false;
-
             if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-                // Mobile device style: fill the whole browser client area with the game canvas:
                 var meta = document.createElement('meta');
                 meta.name = 'viewport';
                 meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
@@ -138,6 +208,9 @@
                 createUnityInstance(canvas, config, (progress) => {
                     progressBarFull.style.width = 100 * progress + "%";
                 }).then((unityInstance) => {
+                    // Expose unityInstance globally so we can access it for the manual save
+                    window.unityInstance = unityInstance;
+
                     loadingBar.style.display = "none";
                     loadingText.remove();
                 }).catch((message) => {
