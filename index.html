@@ -22,14 +22,14 @@
             position: absolute;
             top: 20px;
             right: 20px;
-            background: linear-gradient(135deg, #4CAF50, #45a049);
-            color: white;
+            background: rgba(0, 0, 0, 0.8);
+            color: #4CAF50;
             padding: 12px 24px;
             border-radius: 8px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             font-weight: bold;
             font-size: 16px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
             opacity: 0;
             transform: translateY(-20px);
             transition: opacity 0.3s ease, transform 0.3s ease;
@@ -38,6 +38,7 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            border: 1px solid #4CAF50;
         }
 
         #save-indicator.visible {
@@ -48,6 +49,20 @@
         #save-indicator svg {
             width: 20px;
             height: 20px;
+            stroke: #4CAF50;
+        }
+
+        #save-debug {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: yellow;
+            font-family: monospace;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px;
+            pointer-events: none;
+            display: none;
+            /* Set to block for debugging */
         }
     </style>
 </head>
@@ -59,8 +74,10 @@
             stroke-linejoin="round">
             <polyline points="20 6 9 17 4 12"></polyline>
         </svg>
-        SAVED
+        <span id="save-text">SAVED</span>
     </div>
+
+    <div id="save-debug"></div>
 
     <div id="loading-text"
         style="color: white; font-size: 48px; font-family: cursive; text-align: center; margin-top: 20px;"> LOADING...
@@ -76,45 +93,78 @@
         <div id="unity-warning"> </div>
     </div>
     <script>
-        // --- Save Indicator & Auto-Save Logic ---
+        // --- Save System ---
         const saveIndicator = document.getElementById('save-indicator');
+        const saveText = document.getElementById('save-text');
+        const debugText = document.getElementById('save-debug');
         let saveTimeout;
 
-        function showSaveIndicator() {
+        function showStatus(text, duration = 2000) {
+            saveText.textContent = text;
             saveIndicator.classList.add('visible');
             if (saveTimeout) clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(() => {
-                saveIndicator.classList.remove('visible');
-            }, 2000);
+            if (duration > 0) {
+                saveTimeout = setTimeout(() => {
+                    saveIndicator.classList.remove('visible');
+                }, duration);
+            }
         }
 
-        // Monitor IndexedDB writes (used by Unity for saving)
-        // This will trigger the indicator whenever the game naturally saves.
+        function debugLog(msg) {
+            console.log("[SaveSystem]", msg);
+            debugText.innerText = msg;
+            debugText.style.display = 'block';
+            setTimeout(() => { debugText.style.display = 'none'; }, 3000);
+        }
+
+        function triggerSave() {
+            debugLog("Attempting save...");
+            if (!window.unityInstance || !window.unityInstance.Module || !window.unityInstance.Module.FS) {
+                debugLog("Unity/FS not ready.");
+                return;
+            }
+
+            try {
+                showStatus("SAVING...", 0); // Keep visible
+                window.unityInstance.Module.FS.syncfs(false, (err) => {
+                    if (err) {
+                        console.error("[SaveSystem] Sync failed:", err);
+                        showStatus("SAVE FAILED!");
+                    } else {
+                        console.log("[SaveSystem] Sync successful");
+                        showStatus("GAME SAVED");
+                    }
+                });
+            } catch (e) {
+                console.error("[SaveSystem] Error:", e);
+                showStatus("ERROR");
+            }
+        }
+
+        // 1. Manual Save (Key: I) - Capture Phase to bypass Pointer Lock
+        window.addEventListener('keydown', (ev) => {
+            if (ev.code === 'KeyI' || ev.key.toLowerCase() === 'i') {
+                // Prevent typing "i" in text fields
+                if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+
+                triggerSave();
+            }
+        }, { capture: true }); // Capture event before canvas/game consumes it
+
+        // 2. Auto-Save Timer (Every 60 seconds)
+        setInterval(() => {
+            if (window.unityInstance) {
+                console.log("[SaveSystem] Auto-saving...");
+                triggerSave();
+            }
+        }, 60000);
+
+        // 3. IDB Hook (Optional: catches internal saves if they happen)
         const originalPut = IDBObjectStore.prototype.put;
         IDBObjectStore.prototype.put = function (...args) {
-            // We use a short timeout to avoid blocking the DB operation and to debounce slightly if needed
-            setTimeout(() => showSaveIndicator(), 10);
+            setTimeout(() => showStatus("GAME SAVED (AUTO)"), 10);
             return originalPut.apply(this, args);
         };
-
-        // Listen for "I" key to force sync/save
-        window.addEventListener('keydown', (ev) => {
-            // Check if 'I' is pressed (case insensitive) and make sure we aren't typing in an input
-            if (ev.key.toLowerCase() === 'i' && ev.target.tagName !== 'INPUT' && ev.target.tagName !== 'TEXTAREA') {
-                if (window.unityInstance && window.unityInstance.Module && window.unityInstance.Module.FS) {
-                    console.log("[Auto-Save] Forcing filesystem sync...");
-                    // 'false' means sync from memory to DB (persist)
-                    window.unityInstance.Module.FS.syncfs(false, (err) => {
-                        if (err) {
-                            console.error("[Auto-Save] Sync failed:", err);
-                        } else {
-                            console.log("[Auto-Save] Sync successful");
-                            showSaveIndicator();
-                        }
-                    });
-                }
-            }
-        });
         // ----------------------------------------
 
         var loadingText = document.querySelector("#loading-text");
@@ -208,12 +258,13 @@
                 createUnityInstance(canvas, config, (progress) => {
                     progressBarFull.style.width = 100 * progress + "%";
                 }).then((unityInstance) => {
-                    // Expose unityInstance globally so we can access it for the manual save
                     window.unityInstance = unityInstance;
+                    console.log("Unity Instance Loaded and Exposed.");
 
                     loadingBar.style.display = "none";
                     loadingText.remove();
                 }).catch((message) => {
+                    console.error("Unity Load Error:", message);
                 });
             };
             document.body.appendChild(script);
