@@ -132,11 +132,6 @@
             transform: translateY(0);
         }
 
-        #save-controls button#btn-scan {
-            border-color: rgba(255, 200, 50, 0.5);
-            color: #ffc832;
-        }
-
         /* Auto-save dot indicator */
         #autosave-indicator {
             position: fixed;
@@ -181,93 +176,6 @@
                 opacity: 1;
             }
         }
-
-        /* Scanner results overlay */
-        #scan-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(6px);
-            z-index: 100000;
-            overflow-y: auto;
-            padding: 20px;
-        }
-
-        #scan-overlay.visible {
-            display: block;
-        }
-
-        #scan-results {
-            max-width: 900px;
-            margin: 0 auto;
-            background: rgba(15, 15, 25, 0.95);
-            border: 1px solid rgba(200, 182, 255, 0.2);
-            border-radius: 16px;
-            padding: 24px;
-            font-family: 'Consolas', 'Monaco', monospace;
-            font-size: 13px;
-            color: #d4d4d4;
-        }
-
-        #scan-results h2 {
-            color: #ffc832;
-            font-size: 18px;
-            margin-bottom: 16px;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-        }
-
-        #scan-results .section {
-            margin-bottom: 20px;
-            padding: 12px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        #scan-results .section h3 {
-            color: #c8b6ff;
-            font-size: 14px;
-            margin-bottom: 8px;
-            font-family: 'Segoe UI', system-ui, sans-serif;
-        }
-
-        #scan-results .found {
-            color: #50dc78;
-        }
-
-        #scan-results .not-found {
-            color: #666;
-        }
-
-        #scan-results .key-find {
-            color: #ffc832;
-            font-weight: bold;
-        }
-
-        #scan-results .entry {
-            padding: 2px 0;
-            line-height: 1.5;
-            word-break: break-all;
-        }
-
-        #scan-close {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: rgba(255, 100, 100, 0.2);
-            border: 1px solid rgba(255, 100, 100, 0.5);
-            color: #ff6464;
-            padding: 8px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            z-index: 100001;
-        }
     </style>
 </head>
 
@@ -286,9 +194,6 @@
     </div>
 
     <div id="save-controls">
-        <button id="btn-scan" title="Deep-scan the runtime to find FS">
-            <span>🔍</span> Scan for FS
-        </button>
         <button id="btn-save" title="Manually sync save data to browser storage">
             <span>💾</span> Save Now
         </button>
@@ -310,27 +215,24 @@
         <span class="text"></span>
     </div>
 
-    <div id="scan-overlay">
-        <button id="scan-close" onclick="document.getElementById('scan-overlay').classList.remove('visible')">✕
-            Close</button>
-        <div id="scan-results"></div>
-    </div>
-
     <input type="file" id="import-file-input" accept=".json,.cloverpit" style="display: none;">
 
     <script>
         // =========================================================================
-        //  SAVE SYSTEM — uses __unityIdbfsMount to reach IDBFS.syncfs directly
+        //  SAVE SYSTEM v4 — captures FS from inside the framework closure
+        //  via the Module["unityFileSystemInit"] hook
         // =========================================================================
+        console.log('[SaveSystem] v4 loaded');
 
         const AUTOSAVE_INTERVAL_MS = 30000;
         const PRODUCT_NAME = 'CloverPit';
-        const IDBFS_DB_NAME = '/idbfs';
 
         let unityInstance = null;
         let autoSaveTimer = null;
         let isFSSyncing = false;
-        let discoveredSyncMethod = null; // { name, fn }
+
+        // This will be set from INSIDE the framework closure!
+        window.__gameFS = null;
 
         // ---- Toast notification ----
         function showSaveStatus(message, type = 'info') {
@@ -342,446 +244,40 @@
             el._hideTimer = setTimeout(() => { el.className = ''; }, 4000);
         }
 
-        // =========================================================================
-        //  STRATEGY: Multiple sync approaches, tried in order of preference
-        // =========================================================================
-
-        // Strategy 1: Use __unityIdbfsMount.type.syncfs(mount, false, cb)
-        // The mount object returned by FS.mount(IDBFS,...) has a .type that
-        // references the IDBFS module. IDBFS has its own syncfs(mount, populate, cb).
-        function trySyncViaMount(callback) {
-            try {
-                const mount = unityInstance && unityInstance.Module && unityInstance.Module.__unityIdbfsMount;
-                if (!mount) return false;
-
-                // mount.type should be IDBFS which has syncfs
-                if (mount.type && typeof mount.type.syncfs === 'function') {
-                    mount.type.syncfs(mount, false, callback);
-                    return true;
-                }
-
-                // Some builds: mount.mount.type
-                if (mount.mount && mount.mount.type && typeof mount.mount.type.syncfs === 'function') {
-                    mount.mount.type.syncfs(mount.mount, false, callback);
-                    return true;
-                }
-
-                return false;
-            } catch (e) {
-                console.error('[SaveSystem] Mount sync error:', e);
-                return false;
-            }
-        }
-
-        // Strategy 2: Use Module.FS.syncfs if somehow available
-        function trySyncViaModuleFS(callback) {
-            try {
-                if (unityInstance && unityInstance.Module && unityInstance.Module.FS &&
-                    typeof unityInstance.Module.FS.syncfs === 'function') {
-                    unityInstance.Module.FS.syncfs(false, callback);
-                    return true;
-                }
-                return false;
-            } catch (e) { return false; }
-        }
-
-        // Strategy 3: Global FS
-        function trySyncViaGlobalFS(callback) {
-            try {
-                if (typeof FS !== 'undefined' && typeof FS.syncfs === 'function') {
-                    FS.syncfs(false, callback);
-                    return true;
-                }
-                return false;
-            } catch (e) { return false; }
-        }
-
-        // Strategy 4: Walk all window props looking for any FS.syncfs
-        function trySyncViaWindowScan(callback) {
-            try {
-                for (const key of Object.getOwnPropertyNames(window)) {
-                    try {
-                        const val = window[key];
-                        if (val && typeof val === 'object' && typeof val.syncfs === 'function' && typeof val.readdir === 'function') {
-                            val.syncfs(false, callback);
-                            return true;
-                        }
-                    } catch (e) { }
-                }
-                return false;
-            } catch (e) { return false; }
-        }
-
-        // Unified sync: tries all strategies
+        // ---- Core: sync the filesystem to IndexedDB ----
         function syncFS(showNotification = true) {
             return new Promise((resolve, reject) => {
                 if (isFSSyncing) { resolve(); return; }
-                if (!unityInstance) {
-                    if (showNotification) showSaveStatus('Game not loaded yet', 'error');
-                    resolve(); return;
+
+                if (!window.__gameFS) {
+                    if (showNotification) showSaveStatus('FS not captured yet — waiting for game init', 'error');
+                    console.warn('[SaveSystem] __gameFS is null');
+                    resolve();
+                    return;
                 }
 
                 isFSSyncing = true;
                 if (showNotification) showSaveStatus('Saving...', 'info');
 
-                const cb = function (err) {
+                try {
+                    window.__gameFS.syncfs(false, function (err) {
+                        isFSSyncing = false;
+                        if (err) {
+                            console.error('[SaveSystem] syncfs error:', err);
+                            if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
+                            reject(err);
+                        } else {
+                            console.log('[SaveSystem] FS synced to IndexedDB ✓');
+                            if (showNotification) showSaveStatus('Progress saved!', 'success');
+                            resolve();
+                        }
+                    });
+                } catch (e) {
                     isFSSyncing = false;
-                    if (err) {
-                        console.error('[SaveSystem] syncfs error:', err);
-                        if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
-                        reject(err);
-                    } else {
-                        console.log('[SaveSystem] synced to IndexedDB ✓');
-                        if (showNotification) showSaveStatus('Progress saved!', 'success');
-                        resolve();
-                    }
-                };
-
-                // Try each strategy in order
-                if (trySyncViaMount(cb)) {
-                    console.log('[SaveSystem] Using mount.type.syncfs strategy');
-                    return;
+                    console.error('[SaveSystem] syncfs exception:', e);
+                    if (showNotification) showSaveStatus('Save error: ' + e.message, 'error');
+                    reject(e);
                 }
-                if (trySyncViaModuleFS(cb)) {
-                    console.log('[SaveSystem] Using Module.FS.syncfs strategy');
-                    return;
-                }
-                if (trySyncViaGlobalFS(cb)) {
-                    console.log('[SaveSystem] Using global FS.syncfs strategy');
-                    return;
-                }
-                if (trySyncViaWindowScan(cb)) {
-                    console.log('[SaveSystem] Using window scan strategy');
-                    return;
-                }
-
-                // All strategies failed
-                isFSSyncing = false;
-                console.warn('[SaveSystem] No sync method worked');
-                if (showNotification) showSaveStatus('No sync method available — click Scan for FS', 'error');
-                resolve();
-            });
-        }
-
-        // ---- Auto-save timer ----
-        function startAutoSave() {
-            if (autoSaveTimer) clearInterval(autoSaveTimer);
-            autoSaveTimer = setInterval(() => {
-                syncFS(false).catch(() => { });
-            }, AUTOSAVE_INTERVAL_MS);
-            console.log('[SaveSystem] Auto-save started (every ' + (AUTOSAVE_INTERVAL_MS / 1000) + 's)');
-        }
-
-        // =========================================================================
-        //  DEEP FS SCANNER
-        // =========================================================================
-        async function runScanAndDisplay() {
-            showSaveStatus('Scanning runtime...', 'info');
-            let html = '<h2>🔍 FS Scanner Results</h2>';
-
-            // ---- Deep-probe __unityIdbfsMount (the KEY object) ----
-            const mount = unityInstance && unityInstance.Module && unityInstance.Module.__unityIdbfsMount;
-            html += '<div class="section"><h3>🎯 __unityIdbfsMount Deep Probe</h3>';
-            if (mount) {
-                html += '<div class="entry found">✅ Mount object exists</div>';
-                html += '<div class="entry">Keys: ' + esc(Object.keys(mount).join(', ')) + '</div>';
-                html += '<div class="entry">typeof mount.type: ' + typeof mount.type + '</div>';
-
-                if (mount.type) {
-                    html += '<div class="entry found">mount.type keys: ' + esc(Object.keys(mount.type).join(', ')) + '</div>';
-                    html += '<div class="entry found">mount.type.syncfs: ' + typeof mount.type.syncfs + '</div>';
-                    html += '<div class="entry">mount.type.mount: ' + typeof mount.type.mount + '</div>';
-                    if (typeof mount.type.syncfs === 'function') {
-                        html += '<div class="entry key-find">✅ mount.type.syncfs IS AVAILABLE — saves should work!</div>';
-                    }
-                }
-
-                if (mount.mount) {
-                    html += '<div class="entry">mount.mount keys: ' + esc(Object.keys(mount.mount).join(', ')) + '</div>';
-                    if (mount.mount.type) {
-                        html += '<div class="entry">mount.mount.type keys: ' + esc(Object.keys(mount.mount.type).join(', ')) + '</div>';
-                        html += '<div class="entry">mount.mount.type.syncfs: ' + typeof mount.mount.type.syncfs + '</div>';
-                        if (typeof mount.mount.type.syncfs === 'function') {
-                            html += '<div class="entry key-find">✅ mount.mount.type.syncfs IS AVAILABLE!</div>';
-                        }
-                    }
-                }
-
-                // Try to find the IDBFS reference via mount object chain
-                html += '<div class="entry">mount.mountpoint: ' + esc(String(mount.mountpoint || mount.mount?.mountpoint || 'N/A')) + '</div>';
-
-                // Enumerate ALL nested properties up to 4 levels deep looking for syncfs
-                const syncPaths = [];
-                function findSyncfs(obj, path, depth) {
-                    if (!obj || depth > 4 || typeof obj !== 'object') return;
-                    try {
-                        for (const key of Object.keys(obj)) {
-                            const val = obj[key];
-                            const fullPath = path + '.' + key;
-                            if (typeof val === 'function' && key === 'syncfs') {
-                                syncPaths.push(fullPath);
-                            } else if (val && typeof val === 'object' && !Array.isArray(val) && key !== 'node_ops' && key !== 'stream_ops') {
-                                findSyncfs(val, fullPath, depth + 1);
-                            }
-                        }
-                    } catch (e) { }
-                }
-                findSyncfs(mount, 'mount', 0);
-
-                if (syncPaths.length > 0) {
-                    html += '<div class="entry key-find">🎯 Found syncfs at: ' + esc(syncPaths.join(', ')) + '</div>';
-                } else {
-                    html += '<div class="entry not-found">No syncfs found in mount object tree (4 levels deep)</div>';
-                }
-
-                // Also check idbPersistState (auto-persist status)
-                if ('idbPersistState' in mount) {
-                    html += '<div class="entry found">idbPersistState: ' + esc(String(mount.idbPersistState)) + ' (auto-persist is active!)</div>';
-                }
-                if (mount.mount && 'idbPersistState' in mount.mount) {
-                    html += '<div class="entry found">mount.mount.idbPersistState: ' + esc(String(mount.mount.idbPersistState)) + '</div>';
-                }
-
-            } else {
-                html += '<div class="entry not-found">❌ __unityIdbfsMount not found</div>';
-            }
-            html += '</div>';
-
-            // ---- Try a test save right now ----
-            html += '<div class="section"><h3>🧪 Live Save Test</h3>';
-            try {
-                const result = await new Promise((resolve) => {
-                    let worked = false;
-                    const testCb = (err) => {
-                        if (err) resolve({ ok: false, method: 'N/A', err: String(err) });
-                        else resolve({ ok: true, method: 'N/A' });
-                    };
-
-                    if (mount && mount.type && typeof mount.type.syncfs === 'function') {
-                        worked = true;
-                        try {
-                            mount.type.syncfs(mount, false, (err) => {
-                                resolve({ ok: !err, method: 'mount.type.syncfs(mount)', err: err ? String(err) : null });
-                            });
-                        } catch (e) {
-                            resolve({ ok: false, method: 'mount.type.syncfs(mount)', err: e.message });
-                        }
-                    }
-
-                    if (!worked && mount && mount.mount && mount.mount.type && typeof mount.mount.type.syncfs === 'function') {
-                        worked = true;
-                        try {
-                            mount.mount.type.syncfs(mount.mount, false, (err) => {
-                                resolve({ ok: !err, method: 'mount.mount.type.syncfs(mount.mount)', err: err ? String(err) : null });
-                            });
-                        } catch (e) {
-                            resolve({ ok: false, method: 'mount.mount.type.syncfs(mount.mount)', err: e.message });
-                        }
-                    }
-
-                    if (!worked) resolve({ ok: false, method: 'none', err: 'No sync method found on mount' });
-                });
-
-                if (result.ok) {
-                    html += '<div class="entry key-find">✅ SAVE WORKED via: ' + esc(result.method) + '</div>';
-                } else {
-                    html += '<div class="entry" style="color:#ff6464">❌ Save failed via: ' + esc(result.method) + ' — Error: ' + esc(result.err || 'unknown') + '</div>';
-                }
-            } catch (e) {
-                html += '<div class="entry" style="color:#ff6464">❌ Test exception: ' + esc(e.message) + '</div>';
-            }
-            html += '</div>';
-
-            // ---- Check unityInstance.Module for any object with syncfs ----
-            html += '<div class="section"><h3>📦 Module Properties with syncfs (deep scan)</h3>';
-            if (unityInstance && unityInstance.Module) {
-                const modKeys = Object.keys(unityInstance.Module);
-                let foundAny = false;
-                for (const key of modKeys) {
-                    try {
-                        const val = unityInstance.Module[key];
-                        if (val && typeof val === 'object') {
-                            if (typeof val.syncfs === 'function') {
-                                html += '<div class="entry key-find">✅ Module.' + esc(key) + ' HAS syncfs!</div>';
-                                foundAny = true;
-                            }
-                            // Check one level deeper
-                            for (const sub of Object.keys(val).slice(0, 50)) {
-                                try {
-                                    if (val[sub] && typeof val[sub] === 'object' && typeof val[sub].syncfs === 'function') {
-                                        html += '<div class="entry key-find">✅ Module.' + esc(key) + '.' + esc(sub) + ' HAS syncfs!</div>';
-                                        foundAny = true;
-                                    }
-                                } catch (e) { }
-                            }
-                        }
-                    } catch (e) { }
-                }
-                if (!foundAny) {
-                    html += '<div class="entry not-found">No objects with syncfs() found on Module</div>';
-                }
-                html += '<div class="entry">Total Module keys: ' + modKeys.length + '</div>';
-                html += '<div class="entry">All Module keys: ' + esc(modKeys.join(', ')) + '</div>';
-            }
-            html += '</div>';
-
-            // ---- IndexedDB databases ----
-            html += '<div class="section"><h3>🗄️ IndexedDB Databases</h3>';
-            try {
-                if (indexedDB.databases) {
-                    const dbs = await indexedDB.databases();
-                    for (const db of dbs) {
-                        html += '<div class="entry found">' + esc(db.name) + ' (v' + db.version + ')</div>';
-                        // Try to list the object stores
-                        try {
-                            const openReq = indexedDB.open(db.name, db.version);
-                            const storeNames = await new Promise((resolve, reject) => {
-                                openReq.onsuccess = () => {
-                                    const d = openReq.result;
-                                    const names = Array.from(d.objectStoreNames);
-                                    d.close();
-                                    resolve(names);
-                                };
-                                openReq.onerror = () => resolve(['(error opening)']);
-                            });
-                            html += '<div class="entry" style="padding-left:20px">Stores: ' + esc(storeNames.join(', ')) + '</div>';
-                            // If it's /idbfs, try to show the keys in the FILE_DATA store
-                            if (db.name === '/idbfs' && storeNames.includes('FILE_DATA')) {
-                                try {
-                                    const openReq2 = indexedDB.open(db.name, db.version);
-                                    const fileKeys = await new Promise((resolve, reject) => {
-                                        openReq2.onsuccess = () => {
-                                            const d = openReq2.result;
-                                            const tx = d.transaction('FILE_DATA', 'readonly');
-                                            const store = tx.objectStore('FILE_DATA');
-                                            const req = store.getAllKeys();
-                                            req.onsuccess = () => { d.close(); resolve(req.result); };
-                                            req.onerror = () => { d.close(); resolve(['(error)']); };
-                                        };
-                                        openReq2.onerror = () => resolve(['(error opening)']);
-                                    });
-                                    html += '<div class="entry found" style="padding-left:20px">FILE_DATA keys (' + fileKeys.length + '):</div>';
-                                    for (const key of fileKeys.slice(0, 50)) {
-                                        html += '<div class="entry" style="padding-left:40px;color:#aaa">' + esc(String(key)) + '</div>';
-                                    }
-                                    if (fileKeys.length > 50) html += '<div class="entry" style="padding-left:40px">... and ' + (fileKeys.length - 50) + ' more</div>';
-                                } catch (e) { }
-                            }
-                        } catch (e) { }
-                    }
-                } else {
-                    html += '<div class="entry not-found">Browser does not support indexedDB.databases()</div>';
-                }
-            } catch (e) {
-                html += '<div class="entry not-found">Error: ' + esc(e.message) + '</div>';
-            }
-            html += '</div>';
-
-            // ---- All window globals with FS-like shape ----
-            html += '<div class="section"><h3>🌐 Window-level objects with syncfs()</h3>';
-            let foundGlobal = false;
-            try {
-                for (const key of Object.getOwnPropertyNames(window)) {
-                    try {
-                        const val = window[key];
-                        if (val && typeof val === 'object' && typeof val.syncfs === 'function') {
-                            html += '<div class="entry key-find">window.' + esc(key) + ' HAS syncfs! (keys: ' + esc(Object.keys(val).slice(0, 15).join(', ')) + ')</div>';
-                            foundGlobal = true;
-                        }
-                    } catch (e) { }
-                }
-            } catch (e) { }
-            if (!foundGlobal) html += '<div class="entry not-found">No window-level objects with syncfs() found</div>';
-            html += '</div>';
-
-            // ---- unityInstance structure ----
-            html += '<div class="section"><h3>🎮 unityInstance Keys</h3>';
-            html += '<div class="entry">' + esc(Object.keys(unityInstance || {}).join(', ')) + '</div>';
-            html += '</div>';
-
-            document.getElementById('scan-results').innerHTML = html;
-            document.getElementById('scan-overlay').classList.add('visible');
-        }
-
-        function esc(str) {
-            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        }
-
-        // ---- Flush IDBFS to IndexedDB ----
-        function syncFS(showNotification = true) {
-            return new Promise((resolve, reject) => {
-                if (isFSSyncing) { resolve(); return; }
-                if (!unityInstance) {
-                    if (showNotification) showSaveStatus('Game not loaded yet', 'error');
-                    resolve(); return;
-                }
-
-                isFSSyncing = true;
-                if (showNotification) showSaveStatus('Saving...', 'info');
-
-                const cb = function (err) {
-                    isFSSyncing = false;
-                    if (err) {
-                        console.error('[SaveSystem] syncfs error:', err);
-                        if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
-                        reject(err);
-                    } else {
-                        console.log('[SaveSystem] synced to IndexedDB ✓');
-                        if (showNotification) showSaveStatus('Progress saved!', 'success');
-                        resolve();
-                    }
-                };
-
-                // Strategy 1: mount.type.syncfs(mount, false, cb)
-                try {
-                    const mount = unityInstance.Module.__unityIdbfsMount;
-                    if (mount) {
-                        // Direct mount.type
-                        if (mount.type && typeof mount.type.syncfs === 'function') {
-                            mount.type.syncfs(mount, false, cb);
-                            return;
-                        }
-                        // mount.mount.type
-                        if (mount.mount && mount.mount.type && typeof mount.mount.type.syncfs === 'function') {
-                            mount.mount.type.syncfs(mount.mount, false, cb);
-                            return;
-                        }
-                    }
-                } catch (e) { console.warn('[SaveSystem] Mount strategy error:', e); }
-
-                // Strategy 2: Module.FS.syncfs
-                try {
-                    if (unityInstance.Module.FS && typeof unityInstance.Module.FS.syncfs === 'function') {
-                        unityInstance.Module.FS.syncfs(false, cb);
-                        return;
-                    }
-                } catch (e) { }
-
-                // Strategy 3: Global FS
-                try {
-                    if (typeof FS !== 'undefined' && typeof FS.syncfs === 'function') {
-                        FS.syncfs(false, cb);
-                        return;
-                    }
-                } catch (e) { }
-
-                // Strategy 4: Window scan
-                try {
-                    for (const key of Object.getOwnPropertyNames(window)) {
-                        try {
-                            const val = window[key];
-                            if (val && typeof val === 'object' && typeof val.syncfs === 'function' && typeof val.readdir === 'function') {
-                                val.syncfs(false, cb);
-                                return;
-                            }
-                        } catch (e) { }
-                    }
-                } catch (e) { }
-
-                // All strategies failed
-                isFSSyncing = false;
-                if (showNotification) showSaveStatus('No sync method available — click Scan for details', 'error');
-                resolve();
             });
         }
 
@@ -800,8 +296,8 @@
                 showSaveStatus('Exporting save data...', 'info');
                 await syncFS(false).catch(() => { });
 
-                const exportData = { version: 2, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
-                let dbNames = [IDBFS_DB_NAME];
+                const exportData = { version: 3, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
+                let dbNames = ['/idbfs'];
 
                 if (indexedDB.databases) {
                     const allDbs = await indexedDB.databases();
@@ -874,7 +370,10 @@
             try {
                 showSaveStatus('Importing save data...', 'info');
                 const importData = JSON.parse(await file.text());
-                if (!importData.databases || importData.game !== PRODUCT_NAME) { showSaveStatus('Invalid save file!', 'error'); return; }
+                if (!importData.databases || importData.game !== PRODUCT_NAME) {
+                    showSaveStatus('Invalid save file!', 'error');
+                    return;
+                }
 
                 for (const [dbName, storeData] of Object.entries(importData.databases)) {
                     await importIDB(dbName, storeData);
@@ -924,7 +423,6 @@
         }
 
         // ---- Button handlers ----
-        document.getElementById('btn-scan').addEventListener('click', () => runScanAndDisplay());
         document.getElementById('btn-save').addEventListener('click', () => syncFS(true));
         document.getElementById('btn-export').addEventListener('click', () => exportSaveData());
         document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file-input').click());
@@ -938,10 +436,7 @@
         // ---- Sync on page close/hide ----
         window.addEventListener('beforeunload', () => {
             try {
-                const mount = unityInstance && unityInstance.Module && unityInstance.Module.__unityIdbfsMount;
-                if (mount && mount.type && typeof mount.type.syncfs === 'function') {
-                    mount.type.syncfs(mount, false, () => { });
-                }
+                if (window.__gameFS) window.__gameFS.syncfs(false, () => { });
             } catch (e) { }
         });
         document.addEventListener('visibilitychange', () => {
@@ -1003,7 +498,49 @@
                 productName: "CloverPit",
                 productVersion: "1.3",
                 showBanner: function (msg, type) { console.log('[Unity] ' + type + ': ' + msg); },
+
+                // Enable auto-persist on every file close
                 autoSyncPersistentDataPath: true,
+
+                // ============================================================
+                //  THE KEY: Override unityFileSystemInit to capture FS
+                //
+                //  The framework code does:
+                //    var unityFileSystemInit = Module["unityFileSystemInit"] || function() { ... };
+                //    unityFileSystemInit();
+                //
+                //  By providing our own, it runs INSIDE the framework closure
+                //  where FS, IDBFS, MEMFS etc. are local variables — so we
+                //  can capture them on window.__gameFS!
+                // ============================================================
+                unityFileSystemInit: function () {
+                    // At this point, FS and IDBFS are closure-scoped variables
+                    // that we can access because this function is called from
+                    // inside the framework module.
+
+                    console.log('[SaveSystem] unityFileSystemInit hook running!');
+                    console.log('[SaveSystem] typeof FS:', typeof FS);
+                    console.log('[SaveSystem] typeof IDBFS:', typeof IDBFS);
+
+                    // CAPTURE FS globally so our save system can use it!
+                    window.__gameFS = FS;
+                    window.__gameIDBFS = typeof IDBFS !== 'undefined' ? IDBFS : null;
+
+                    // Replicate the default unityFileSystemInit logic exactly:
+                    FS.mkdir("/idbfs");
+                    Module.__unityIdbfsMount = FS.mount(IDBFS,
+                        { autoPersist: !!Module["autoSyncPersistentDataPath"] },
+                        "/idbfs"
+                    );
+                    Module.addRunDependency("JS_FileSystem_Mount");
+                    FS.syncfs(true, function (err) {
+                        if (err)
+                            console.log("IndexedDB is not available. Data will not persist in cache and PlayerPrefs will not be saved.");
+                        Module.removeRunDependency("JS_FileSystem_Mount");
+                    });
+
+                    console.log('[SaveSystem] FS captured successfully! FS.syncfs:', typeof FS.syncfs);
+                },
             };
 
             if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
@@ -1032,22 +569,20 @@
                     // Start auto-save
                     startAutoSave();
 
-                    // Quick status check
-                    setTimeout(() => {
-                        const mount = unityInstance.Module.__unityIdbfsMount;
-                        if (mount && mount.type && typeof mount.type.syncfs === 'function') {
-                            showSaveStatus('Save system ready! (via IDBFS mount)', 'success');
-                            console.log('[SaveSystem] ✓ mount.type.syncfs available');
-                        } else if (mount && mount.mount && mount.mount.type && typeof mount.mount.type.syncfs === 'function') {
-                            showSaveStatus('Save system ready! (via mount.mount)', 'success');
-                            console.log('[SaveSystem] ✓ mount.mount.type.syncfs available');
-                        } else {
-                            showSaveStatus('Click "Scan for FS" to diagnose', 'error');
-                            console.warn('[SaveSystem] No direct syncfs path — run scanner');
-                        }
-                    }, 3000);
+                    // Verify FS was captured
+                    if (window.__gameFS && typeof window.__gameFS.syncfs === 'function') {
+                        console.log('[SaveSystem] ✓ FS is available! Save system fully operational.');
+                        showSaveStatus('Save system ready!', 'success');
 
-                    console.log('[SaveSystem] Game loaded, save system active');
+                        // List /idbfs contents for debugging
+                        try {
+                            const contents = window.__gameFS.readdir('/idbfs');
+                            console.log('[SaveSystem] /idbfs contents:', contents);
+                        } catch (e) { }
+                    } else {
+                        console.error('[SaveSystem] ✗ FS was NOT captured. __gameFS:', window.__gameFS);
+                        showSaveStatus('FS not captured — check console', 'error');
+                    }
                 }).catch((message) => {
                     console.error('[Unity] Error:', message);
                 });
