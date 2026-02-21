@@ -571,8 +571,9 @@
             var loadingBar = document.querySelector("#unity-loading-bar");
             var progressBarFull = document.querySelector("#unity-progress-bar-full");
             var config = {
-                dataUrl, wasmUrl,
+                dataUrl: dataUrl,
                 frameworkUrl: "Build/CloverPit.framework.js",
+                codeUrl: wasmUrl,
                 streamingAssetsUrl: "StreamingAssets",
                 companyName: "Panik Arcade", productName: "CloverPit", productVersion: "1.3",
                 showBanner: (m, t) => console.log(`[Unity] ${t}: ${m}`),
@@ -598,10 +599,6 @@
             document.body.appendChild(s);
         })();
     </script>
-</body>
-
-</html>
-
 </body>
 
 </html>
