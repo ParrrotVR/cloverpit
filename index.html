@@ -219,10 +219,9 @@
 
     <script>
         // =========================================================================
-        //  SAVE SYSTEM v4 — captures FS from inside the framework closure
-        //  via the Module["unityFileSystemInit"] hook
+        //  SAVE SYSTEM v5 — patches framework.js to expose FS before loading
         // =========================================================================
-        console.log('[SaveSystem] v4 loaded');
+        console.log('[SaveSystem] v5 loaded');
 
         const AUTOSAVE_INTERVAL_MS = 30000;
         const PRODUCT_NAME = 'CloverPit';
@@ -231,7 +230,7 @@
         let autoSaveTimer = null;
         let isFSSyncing = false;
 
-        // This will be set from INSIDE the framework closure!
+        // Will be set by the patched framework code
         window.__gameFS = null;
 
         // ---- Toast notification ----
@@ -250,7 +249,7 @@
                 if (isFSSyncing) { resolve(); return; }
 
                 if (!window.__gameFS) {
-                    if (showNotification) showSaveStatus('FS not captured yet — waiting for game init', 'error');
+                    if (showNotification) showSaveStatus('FS not captured — game may still be loading', 'error');
                     console.warn('[SaveSystem] __gameFS is null');
                     resolve();
                     return;
@@ -444,7 +443,7 @@
         });
 
         // =========================================================================
-        //  GAME LOADER
+        //  GAME LOADER — fetches & patches framework.js to expose FS
         // =========================================================================
 
         var loadingText = document.querySelector("#loading-text");
@@ -479,11 +478,61 @@
         }
 
         (async () => {
+            // Step 1: Download game assets (data + wasm) with progress
             const [dataUrl, wasmUrl] = await Promise.all([
                 mergeFiles(getParts("Build/CloverPit.data", 1, 3)),
                 mergeFiles(getParts("Build/CloverPit.wasm", 1, 3)),
             ]);
 
+            // Step 2: Fetch framework.js and patch it to expose FS
+            loadingText.textContent = 'Patching framework...';
+            console.log('[SaveSystem] Fetching framework.js to patch...');
+
+            let frameworkUrl = "Build/CloverPit.framework.js";
+            try {
+                const frameworkResponse = await fetch("Build/CloverPit.framework.js");
+                let frameworkText = await frameworkResponse.text();
+
+                // Inject "window.__gameFS=FS;" right before the __unityIdbfsMount assignment.
+                // This code runs INSIDE the framework closure where FS is a local variable.
+                //
+                // Original: Module.__unityIdbfsMount=FS.mount(IDBFS,...
+                // Patched:  window.__gameFS=FS;Module.__unityIdbfsMount=FS.mount(IDBFS,...
+                const target = 'Module.__unityIdbfsMount=FS.mount';
+                const patch = 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;Module.__unityIdbfsMount=FS.mount';
+
+                if (frameworkText.includes(target)) {
+                    frameworkText = frameworkText.replace(target, patch);
+                    console.log('[SaveSystem] ✓ Framework patched successfully! Injected FS capture.');
+                } else {
+                    console.warn('[SaveSystem] ✗ Could not find patch target in framework. Trying alternate...');
+                    // Alternate: try with spaces or different formatting
+                    const alt1 = 'Module.__unityIdbfsMount = FS.mount';
+                    if (frameworkText.includes(alt1)) {
+                        frameworkText = frameworkText.replace(alt1, 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;' + alt1);
+                        console.log('[SaveSystem] ✓ Framework patched with alternate target.');
+                    } else {
+                        // Last resort: inject at the start of unityFileSystemInit default function
+                        const alt2 = 'FS.mkdir("/idbfs")';
+                        if (frameworkText.includes(alt2)) {
+                            frameworkText = frameworkText.replace(alt2, 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;FS.mkdir("/idbfs")');
+                            console.log('[SaveSystem] ✓ Framework patched at FS.mkdir target.');
+                        } else {
+                            console.error('[SaveSystem] ✗ Could not patch framework — no known target found!');
+                        }
+                    }
+                }
+
+                // Create blob URL from patched framework
+                const blob = new Blob([frameworkText], { type: 'application/javascript' });
+                frameworkUrl = URL.createObjectURL(blob);
+                console.log('[SaveSystem] Using patched framework blob URL');
+            } catch (e) {
+                console.error('[SaveSystem] Failed to fetch/patch framework, using original:', e);
+                // Fall back to original URL
+            }
+
+            // Step 3: Boot Unity with patched framework
             var canvas = document.querySelector("#unity-canvas");
             var loadingBar = document.querySelector("#unity-loading-bar");
             var progressBarFull = document.querySelector("#unity-progress-bar-full");
@@ -491,56 +540,14 @@
             var config = {
                 arguments: [],
                 dataUrl: dataUrl,
-                frameworkUrl: "Build/CloverPit.framework.js",
+                frameworkUrl: frameworkUrl,
                 codeUrl: wasmUrl,
                 streamingAssetsUrl: "StreamingAssets",
                 companyName: "Panik Arcade",
                 productName: "CloverPit",
                 productVersion: "1.3",
                 showBanner: function (msg, type) { console.log('[Unity] ' + type + ': ' + msg); },
-
-                // Enable auto-persist on every file close
                 autoSyncPersistentDataPath: true,
-
-                // ============================================================
-                //  THE KEY: Override unityFileSystemInit to capture FS
-                //
-                //  The framework code does:
-                //    var unityFileSystemInit = Module["unityFileSystemInit"] || function() { ... };
-                //    unityFileSystemInit();
-                //
-                //  By providing our own, it runs INSIDE the framework closure
-                //  where FS, IDBFS, MEMFS etc. are local variables — so we
-                //  can capture them on window.__gameFS!
-                // ============================================================
-                unityFileSystemInit: function () {
-                    // At this point, FS and IDBFS are closure-scoped variables
-                    // that we can access because this function is called from
-                    // inside the framework module.
-
-                    console.log('[SaveSystem] unityFileSystemInit hook running!');
-                    console.log('[SaveSystem] typeof FS:', typeof FS);
-                    console.log('[SaveSystem] typeof IDBFS:', typeof IDBFS);
-
-                    // CAPTURE FS globally so our save system can use it!
-                    window.__gameFS = FS;
-                    window.__gameIDBFS = typeof IDBFS !== 'undefined' ? IDBFS : null;
-
-                    // Replicate the default unityFileSystemInit logic exactly:
-                    FS.mkdir("/idbfs");
-                    Module.__unityIdbfsMount = FS.mount(IDBFS,
-                        { autoPersist: !!Module["autoSyncPersistentDataPath"] },
-                        "/idbfs"
-                    );
-                    Module.addRunDependency("JS_FileSystem_Mount");
-                    FS.syncfs(true, function (err) {
-                        if (err)
-                            console.log("IndexedDB is not available. Data will not persist in cache and PlayerPrefs will not be saved.");
-                        Module.removeRunDependency("JS_FileSystem_Mount");
-                    });
-
-                    console.log('[SaveSystem] FS captured successfully! FS.syncfs:', typeof FS.syncfs);
-                },
             };
 
             if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
@@ -569,20 +576,22 @@
                     // Start auto-save
                     startAutoSave();
 
-                    // Verify FS was captured
-                    if (window.__gameFS && typeof window.__gameFS.syncfs === 'function') {
-                        console.log('[SaveSystem] ✓ FS is available! Save system fully operational.');
-                        showSaveStatus('Save system ready!', 'success');
+                    // Verify FS was captured by the patch
+                    setTimeout(() => {
+                        if (window.__gameFS && typeof window.__gameFS.syncfs === 'function') {
+                            console.log('[SaveSystem] ✓ FS captured! syncfs available.');
+                            showSaveStatus('Save system ready!', 'success');
+                            try {
+                                const contents = window.__gameFS.readdir('/idbfs');
+                                console.log('[SaveSystem] /idbfs contents:', contents);
+                            } catch (e) { console.log('[SaveSystem] /idbfs readdir:', e.message); }
+                        } else {
+                            console.error('[SaveSystem] ✗ FS not captured. __gameFS:', window.__gameFS);
+                            showSaveStatus('FS patch may have failed — check console', 'error');
+                        }
+                    }, 2000);
 
-                        // List /idbfs contents for debugging
-                        try {
-                            const contents = window.__gameFS.readdir('/idbfs');
-                            console.log('[SaveSystem] /idbfs contents:', contents);
-                        } catch (e) { }
-                    } else {
-                        console.error('[SaveSystem] ✗ FS was NOT captured. __gameFS:', window.__gameFS);
-                        showSaveStatus('FS not captured — check console', 'error');
-                    }
+                    console.log('[SaveSystem] Game loaded');
                 }).catch((message) => {
                     console.error('[Unity] Error:', message);
                 });
