@@ -46,7 +46,7 @@
             }
         }
 
-        /* Save status toast — high z-index to sit above Unity canvas */
+        /* Save status toast */
         #save-status {
             position: fixed;
             bottom: 20px;
@@ -86,7 +86,7 @@
             color: #ff6464;
         }
 
-        /* Save controls — top right, above canvas */
+        /* Save controls */
         #save-controls {
             position: fixed;
             top: 12px;
@@ -96,6 +96,9 @@
             z-index: 99999;
             opacity: 0;
             transition: opacity 0.5s ease;
+            flex-wrap: wrap;
+            max-width: 420px;
+            justify-content: flex-end;
         }
 
         #save-controls.visible {
@@ -127,6 +130,11 @@
 
         #save-controls button:active {
             transform: translateY(0);
+        }
+
+        #save-controls button#btn-scan {
+            border-color: rgba(255, 200, 50, 0.5);
+            color: #ffc832;
         }
 
         /* Auto-save dot indicator */
@@ -173,6 +181,92 @@
                 opacity: 1;
             }
         }
+
+        /* Scanner results overlay */
+        #scan-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(6px);
+            z-index: 100000;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        #scan-overlay.visible {
+            display: block;
+        }
+
+        #scan-results {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(15, 15, 25, 0.95);
+            border: 1px solid rgba(200, 182, 255, 0.2);
+            border-radius: 16px;
+            padding: 24px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            color: #d4d4d4;
+        }
+
+        #scan-results h2 {
+            color: #ffc832;
+            font-size: 18px;
+            margin-bottom: 16px;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+
+        #scan-results .section {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        #scan-results .section h3 {
+            color: #c8b6ff;
+            font-size: 14px;
+            margin-bottom: 8px;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+        }
+
+        #scan-results .found {
+            color: #50dc78;
+        }
+
+        #scan-results .not-found {
+            color: #666;
+        }
+
+        #scan-results .key-find {
+            color: #ffc832;
+            font-weight: bold;
+        }
+
+        #scan-results .entry {
+            padding: 2px 0;
+            line-height: 1.5;
+        }
+
+        #scan-close {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 100, 100, 0.2);
+            border: 1px solid rgba(255, 100, 100, 0.5);
+            color: #ff6464;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            z-index: 100001;
+        }
     </style>
 </head>
 
@@ -191,6 +285,9 @@
     </div>
 
     <div id="save-controls">
+        <button id="btn-scan" title="Scan the runtime to find where FS lives">
+            <span>🔍</span> Scan for FS
+        </button>
         <button id="btn-save" title="Manually sync save data to browser storage">
             <span>💾</span> Save Now
         </button>
@@ -212,20 +309,28 @@
         <span class="text"></span>
     </div>
 
+    <div id="scan-overlay">
+        <button id="scan-close" onclick="document.getElementById('scan-overlay').classList.remove('visible')">✕
+            Close</button>
+        <div id="scan-results"></div>
+    </div>
+
     <input type="file" id="import-file-input" accept=".json,.cloverpit" style="display: none;">
 
     <script>
         // =========================================================================
-        //  SAVE SYSTEM — uses unityInstance.Module.FS (module-scoped, NOT global)
+        //  SAVE SYSTEM
         // =========================================================================
 
-        const AUTOSAVE_INTERVAL_MS = 30000; // 30 seconds
+        const AUTOSAVE_INTERVAL_MS = 30000;
         const PRODUCT_NAME = 'CloverPit';
-        const IDBFS_DB_NAME = '/idbfs'; // Unity's IDBFS mountpoint used as IDB name
+        const IDBFS_DB_NAME = '/idbfs';
 
         let unityInstance = null;
         let autoSaveTimer = null;
         let isFSSyncing = false;
+        let discoveredFS = null;       // Will be set by the scanner or auto-detection
+        let discoveredFSPath = null;   // Human-readable path where we found it
 
         // ---- Toast notification ----
         function showSaveStatus(message, type = 'info') {
@@ -237,17 +342,454 @@
             el._hideTimer = setTimeout(() => { el.className = ''; }, 3500);
         }
 
-        // ---- Core: get the module-scoped FS from the Unity instance ----
+        // =========================================================================
+        //  DEEP FS SCANNER — probes hundreds of possible locations
+        // =========================================================================
+        function deepScanForFS() {
+            const results = {
+                found: [],
+                notFound: [],
+                globals: {},
+                unityInstanceKeys: [],
+                moduleKeys: [],
+                idbDatabases: [],
+                windowFS: [],
+                syncfsFunctions: [],
+                bestCandidate: null
+            };
+
+            // Helper: safely get a property
+            function safeGet(obj, path) {
+                try {
+                    let current = obj;
+                    for (const key of path.split('.')) {
+                        if (current == null) return undefined;
+                        current = current[key];
+                    }
+                    return current;
+                } catch (e) { return undefined; }
+            }
+
+            // Helper: check if something looks like Emscripten FS
+            function isFS(obj) {
+                return obj && typeof obj === 'object' &&
+                    typeof obj.syncfs === 'function' &&
+                    (typeof obj.mkdir === 'function' || typeof obj.readdir === 'function');
+            }
+
+            // Helper: check if something looks like a syncfs function
+            function isSyncfs(fn) {
+                return typeof fn === 'function';
+            }
+
+            // ---- 1. Check all direct global paths ----
+            const globalPaths = [
+                'FS', 'fs', 'Module.FS', 'Module.fs',
+                'unityFramework', 'UnityLoader', 'unityInstance',
+                'Module', 'module', '_Module', '__Module',
+                'IDBFS', 'MEMFS', 'NODEFS',
+                'GameGlobal', 'gameInstance', 'game',
+                'Emscripten', 'emscripten', 'EmscriptenModule',
+            ];
+
+            for (const path of globalPaths) {
+                const val = safeGet(window, path);
+                if (val !== undefined) {
+                    results.globals[path] = typeof val;
+                    if (isFS(val)) {
+                        results.found.push('window.' + path + ' ✓ IS a valid FS object');
+                        if (!results.bestCandidate) {
+                            results.bestCandidate = { path: 'window.' + path, obj: val };
+                        }
+                    }
+                } else {
+                    results.notFound.push('window.' + path);
+                }
+            }
+
+            // ---- 2. Deep-scan unityInstance ----
+            if (unityInstance) {
+                results.unityInstanceKeys = Object.keys(unityInstance);
+
+                const uiPaths = [
+                    'Module', 'module', 'Module.FS', 'Module.fs',
+                    'Module.IDBFS', 'Module.asmLibraryArg',
+                    'Module.asm', 'Module.ccall', 'Module.cwrap',
+                    'Module.calledRun', 'Module.ready',
+                    'Module._main', 'Module._JS_FileSystem_Sync',
+                    'Module.__unityIdbfsMount',
+                    'Module.autoSyncPersistentDataPath',
+                    'SendMessage', 'Quit', 'SetFullscreen',
+                ];
+
+                for (const path of uiPaths) {
+                    const val = safeGet(unityInstance, path);
+                    if (val !== undefined) {
+                        const fullPath = 'unityInstance.' + path;
+                        results.globals[fullPath] = typeof val;
+                        if (isFS(val)) {
+                            results.found.push(fullPath + ' ✓ IS a valid FS object');
+                            if (!results.bestCandidate) {
+                                results.bestCandidate = { path: fullPath, obj: val };
+                            }
+                        } else if (path.endsWith('FS') || path.endsWith('fs')) {
+                            results.found.push(fullPath + ' exists but type=' + typeof val);
+                        }
+                    }
+                }
+
+                // Enumerate ALL keys on unityInstance and sub-objects looking for FS
+                try {
+                    for (const key of Object.keys(unityInstance)) {
+                        const val = unityInstance[key];
+                        if (isFS(val)) {
+                            const p = 'unityInstance.' + key;
+                            results.found.push(p + ' ✓ IS a valid FS (found by enumeration!)');
+                            if (!results.bestCandidate) results.bestCandidate = { path: p, obj: val };
+                        }
+                        // Go one level deeper
+                        if (val && typeof val === 'object') {
+                            try {
+                                for (const subKey of Object.keys(val)) {
+                                    const subVal = val[subKey];
+                                    if (isFS(subVal)) {
+                                        const p = 'unityInstance.' + key + '.' + subKey;
+                                        results.found.push(p + ' ✓ IS a valid FS (found by deep enumeration!)');
+                                        if (!results.bestCandidate) results.bestCandidate = { path: p, obj: subVal };
+                                    }
+                                    // Check for syncfs specifically
+                                    if (isSyncfs(subVal) && (subKey === 'syncfs' || subKey.toLowerCase().includes('sync'))) {
+                                        results.syncfsFunctions.push('unityInstance.' + key + '.' + subKey);
+                                    }
+                                    // Go another level
+                                    if (subVal && typeof subVal === 'object') {
+                                        try {
+                                            for (const deepKey of Object.keys(subVal)) {
+                                                if (isFS(subVal[deepKey])) {
+                                                    const p = 'unityInstance.' + key + '.' + subKey + '.' + deepKey;
+                                                    results.found.push(p + ' ✓ IS a valid FS (found 3 levels deep!)');
+                                                    if (!results.bestCandidate) results.bestCandidate = { path: p, obj: subVal[deepKey] };
+                                                }
+                                            }
+                                        } catch (e) { }
+                                    }
+                                }
+                            } catch (e) { }
+                        }
+                    }
+                } catch (e) { results.found.push('Enumeration error: ' + e.message); }
+            }
+
+            // ---- 3. Deep-scan global Module ----
+            if (typeof Module !== 'undefined') {
+                results.moduleKeys = [];
+                try {
+                    const keys = Object.keys(Module);
+                    results.moduleKeys = keys.slice(0, 100); // cap at 100
+
+                    for (const key of keys) {
+                        try {
+                            const val = Module[key];
+                            if (isFS(val)) {
+                                const p = 'Module.' + key;
+                                results.found.push(p + ' ✓ IS a valid FS (found on global Module!)');
+                                if (!results.bestCandidate) results.bestCandidate = { path: p, obj: val };
+                            }
+                            if (key === 'FS' || key === 'fs') {
+                                results.found.push('Module.' + key + ' = ' + typeof val + (val ? ' (keys: ' + Object.keys(val).slice(0, 10).join(',') + ')' : ''));
+                            }
+                        } catch (e) { }
+                    }
+                } catch (e) { }
+            }
+
+            // ---- 4. Scan ALL window properties for FS-like objects ----
+            try {
+                const checked = new Set();
+                for (const key of Object.getOwnPropertyNames(window)) {
+                    if (checked.has(key)) continue;
+                    checked.add(key);
+                    try {
+                        const val = window[key];
+                        if (isFS(val)) {
+                            results.windowFS.push('window.' + key + ' ✓');
+                            if (!results.bestCandidate) results.bestCandidate = { path: 'window.' + key, obj: val };
+                        }
+                        // Also check one level deep on any object
+                        if (val && typeof val === 'object' && !Array.isArray(val)) {
+                            try {
+                                for (const subKey of Object.keys(val).slice(0, 50)) {
+                                    if (isFS(val[subKey])) {
+                                        results.windowFS.push('window.' + key + '.' + subKey + ' ✓');
+                                        if (!results.bestCandidate) results.bestCandidate = { path: 'window.' + key + '.' + subKey, obj: val[subKey] };
+                                    }
+                                }
+                            } catch (e) { }
+                        }
+                    } catch (e) { /* some window props throw on access */ }
+                }
+            } catch (e) { }
+
+            // ---- 5. Check for _JS_FileSystem_Sync and similar exported C functions ----
+            const cFuncNames = [
+                '_JS_FileSystem_Sync',
+                '_JS_FileSystem_Initialize',
+                '_JS_FileSystem_Cleanup',
+                '_JS_PlayerPrefs_SetString',
+                '_JS_PlayerPrefs_GetString',
+                '_main', '_malloc', '_free',
+            ];
+            for (const fn of cFuncNames) {
+                const onModule = typeof Module !== 'undefined' ? safeGet(Module, fn) : undefined;
+                const onUI = unityInstance ? safeGet(unityInstance, 'Module.' + fn) : undefined;
+                const onWindow = safeGet(window, fn);
+                if (onModule) results.syncfsFunctions.push('Module.' + fn + ' (type: ' + typeof onModule + ')');
+                if (onUI) results.syncfsFunctions.push('unityInstance.Module.' + fn + ' (type: ' + typeof onUI + ')');
+                if (onWindow) results.syncfsFunctions.push('window.' + fn + ' (type: ' + typeof onWindow + ')');
+            }
+
+            // ---- 6. Check IndexedDB databases ----
+            const idbPromise = indexedDB.databases ? indexedDB.databases() : Promise.resolve([]);
+
+            // ---- 7. Check iframes (Unity sometimes creates them) ----
+            try {
+                const iframes = document.querySelectorAll('iframe');
+                for (let i = 0; i < iframes.length; i++) {
+                    try {
+                        const w = iframes[i].contentWindow;
+                        if (w && w.FS && isFS(w.FS)) {
+                            results.found.push('iframe[' + i + '].contentWindow.FS ✓');
+                            if (!results.bestCandidate) results.bestCandidate = { path: 'iframe.contentWindow.FS', obj: w.FS };
+                        }
+                        if (w && w.Module && w.Module.FS && isFS(w.Module.FS)) {
+                            results.found.push('iframe[' + i + '].contentWindow.Module.FS ✓');
+                        }
+                    } catch (e) { /* cross-origin */ }
+                }
+            } catch (e) { }
+
+            // ---- 8. Check script tags for framework clues ----
+            const scripts = [];
+            document.querySelectorAll('script[src]').forEach(s => scripts.push(s.src));
+
+            // ---- 9. Probe for Unity exported functions on the asm/wasm instance ----
+            if (unityInstance) {
+                try {
+                    // Try to get the wasm exports
+                    const wasmPaths = [
+                        'Module.asm', 'Module.wasmExports', 'Module.instance',
+                        'Module.instance.exports', 'Module.asmLibraryArg',
+                    ];
+                    for (const wp of wasmPaths) {
+                        const val = safeGet(unityInstance, wp);
+                        if (val && typeof val === 'object') {
+                            const keys = Object.keys(val).filter(k =>
+                                k.toLowerCase().includes('file') ||
+                                k.toLowerCase().includes('sync') ||
+                                k.toLowerCase().includes('idb') ||
+                                k.toLowerCase().includes('fs') ||
+                                k.toLowerCase().includes('persist') ||
+                                k.toLowerCase().includes('save')
+                            );
+                            if (keys.length > 0) {
+                                results.found.push('unityInstance.' + wp + ' has relevant keys: ' + keys.join(', '));
+                            }
+                        }
+                    }
+                } catch (e) { }
+            }
+
+            // ---- 10. Check for the framework's internal unityFileSystemInit artifacts ----
+            const frameworkClues = [
+                { path: 'Module.__unityIdbfsMount', label: 'IDBFS mount point reference' },
+                { path: 'Module.calledRun', label: 'Module has finished running' },
+                { path: 'Module.ready', label: 'Ready promise' },
+                { path: 'Module.postRun', label: 'Post-run hooks' },
+                { path: 'Module.preRun', label: 'Pre-run hooks' },
+            ];
+            for (const clue of frameworkClues) {
+                // check on global Module and unityInstance.Module
+                for (const prefix of ['', 'unityInstance.']) {
+                    const base = prefix ? safeGet(unityInstance, clue.path.replace('Module.', 'Module.')) : safeGet(window, clue.path);
+                    const uiBase = prefix ? safeGet(unityInstance, clue.path) : undefined;
+                    const val = prefix ? uiBase : base;
+                    if (val !== undefined) {
+                        results.found.push(prefix + clue.path + ' = ' + typeof val + ' (' + clue.label + ')');
+                    }
+                }
+            }
+
+            return { results, idbPromise };
+        }
+
+        // ---- Render scan results ----
+        async function runScanAndDisplay() {
+            showSaveStatus('Scanning runtime...', 'info');
+            const { results, idbPromise } = deepScanForFS();
+
+            // Await IDB databases list
+            try {
+                const dbs = await idbPromise;
+                results.idbDatabases = dbs.map(db => db.name + ' (v' + db.version + ')');
+            } catch (e) {
+                results.idbDatabases = ['Error listing databases: ' + e.message];
+            }
+
+            // If we found a candidate, lock it in
+            if (results.bestCandidate) {
+                discoveredFS = results.bestCandidate.obj;
+                discoveredFSPath = results.bestCandidate.path;
+            }
+
+            // Build HTML
+            let html = '<h2>🔍 FS Scanner Results</h2>';
+
+            // Best candidate
+            if (results.bestCandidate) {
+                html += '<div class="section"><h3>🎯 Best FS Candidate Found!</h3>';
+                html += '<div class="entry key-find">✅ ' + results.bestCandidate.path + '</div>';
+                html += '<div class="entry found">Has syncfs: ' + (typeof results.bestCandidate.obj.syncfs) + '</div>';
+                html += '<div class="entry found">Has readdir: ' + (typeof results.bestCandidate.obj.readdir) + '</div>';
+                html += '<div class="entry found">Has mkdir: ' + (typeof results.bestCandidate.obj.mkdir) + '</div>';
+                // Try to list /idbfs contents
+                try {
+                    const contents = results.bestCandidate.obj.readdir('/idbfs');
+                    html += '<div class="entry found">/idbfs contents: ' + JSON.stringify(contents) + '</div>';
+                } catch (e) {
+                    html += '<div class="entry error">/idbfs readdir error: ' + e.message + '</div>';
+                }
+                try {
+                    const root = results.bestCandidate.obj.readdir('/');
+                    html += '<div class="entry found">/ (root) contents: ' + JSON.stringify(root) + '</div>';
+                } catch (e) { }
+                html += '</div>';
+            } else {
+                html += '<div class="section"><h3>❌ No valid FS object found</h3>';
+                html += '<div class="entry not-found">Could not find any Emscripten FS object with syncfs()</div></div>';
+            }
+
+            // All found items
+            if (results.found.length > 0) {
+                html += '<div class="section"><h3>✅ Found Items (' + results.found.length + ')</h3>';
+                for (const item of results.found) {
+                    const cls = item.includes('✓') ? 'found' : 'entry';
+                    html += '<div class="entry ' + cls + '">' + escapeHtml(item) + '</div>';
+                }
+                html += '</div>';
+            }
+
+            // syncfs-related functions
+            if (results.syncfsFunctions.length > 0) {
+                html += '<div class="section"><h3>🔧 Sync/FileSystem Functions</h3>';
+                for (const fn of results.syncfsFunctions) {
+                    html += '<div class="entry found">' + escapeHtml(fn) + '</div>';
+                }
+                html += '</div>';
+            }
+
+            // IDB databases
+            html += '<div class="section"><h3>🗄️ IndexedDB Databases</h3>';
+            if (results.idbDatabases.length > 0) {
+                for (const db of results.idbDatabases) {
+                    html += '<div class="entry found">' + escapeHtml(db) + '</div>';
+                }
+            } else {
+                html += '<div class="entry not-found">No databases found (or browser doesn\'t support indexedDB.databases())</div>';
+            }
+            html += '</div>';
+
+            // Global objects found
+            html += '<div class="section"><h3>🌐 Global Objects Detected</h3>';
+            for (const [path, type] of Object.entries(results.globals)) {
+                html += '<div class="entry found">' + escapeHtml(path) + ' → ' + type + '</div>';
+            }
+            html += '</div>';
+
+            // unityInstance keys
+            if (results.unityInstanceKeys.length > 0) {
+                html += '<div class="section"><h3>🎮 unityInstance Keys</h3>';
+                html += '<div class="entry">' + escapeHtml(results.unityInstanceKeys.join(', ')) + '</div>';
+                html += '</div>';
+            }
+
+            // Module keys
+            if (results.moduleKeys.length > 0) {
+                html += '<div class="section"><h3>📦 Module Keys (first 100)</h3>';
+                html += '<div class="entry">' + escapeHtml(results.moduleKeys.join(', ')) + '</div>';
+                html += '</div>';
+            }
+
+            // Window-level FS
+            if (results.windowFS.length > 0) {
+                html += '<div class="section"><h3>🪟 Window-level FS Objects</h3>';
+                for (const item of results.windowFS) {
+                    html += '<div class="entry found">' + escapeHtml(item) + '</div>';
+                }
+                html += '</div>';
+            }
+
+            document.getElementById('scan-results').innerHTML = html;
+            document.getElementById('scan-overlay').classList.add('visible');
+
+            if (results.bestCandidate) {
+                showSaveStatus('FS found at: ' + results.bestCandidate.path, 'success');
+            } else {
+                showSaveStatus('No FS found — check scan results', 'error');
+            }
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // ---- Core: get FS from discovered location or probe common paths ----
         function getFS() {
-            // The Unity framework scopes FS inside the module closure.
-            // We access it through the unityInstance → Module chain.
-            if (unityInstance && unityInstance.Module && unityInstance.Module.FS) {
-                return unityInstance.Module.FS;
+            // Use previously discovered FS
+            if (discoveredFS) return discoveredFS;
+
+            // Try common paths
+            if (unityInstance) {
+                // Path 1: unityInstance.Module.FS
+                try { if (unityInstance.Module && unityInstance.Module.FS && typeof unityInstance.Module.FS.syncfs === 'function') { discoveredFS = unityInstance.Module.FS; discoveredFSPath = 'unityInstance.Module.FS'; return discoveredFS; } } catch (e) { }
+
+                // Path 2: enumerate unityInstance keys
+                try {
+                    for (const key of Object.keys(unityInstance)) {
+                        const val = unityInstance[key];
+                        if (val && typeof val === 'object' && typeof val.syncfs === 'function') {
+                            discoveredFS = val; discoveredFSPath = 'unityInstance.' + key; return discoveredFS;
+                        }
+                        if (val && typeof val === 'object') {
+                            try {
+                                for (const sub of Object.keys(val)) {
+                                    if (val[sub] && typeof val[sub] === 'object' && typeof val[sub].syncfs === 'function') {
+                                        discoveredFS = val[sub]; discoveredFSPath = 'unityInstance.' + key + '.' + sub; return discoveredFS;
+                                    }
+                                }
+                            } catch (e) { }
+                        }
+                    }
+                } catch (e) { }
             }
-            // Some Unity builds also expose it on the global Module
-            if (typeof Module !== 'undefined' && Module.FS) {
-                return Module.FS;
-            }
+
+            // Path 3: global Module.FS
+            try { if (typeof Module !== 'undefined' && Module.FS && typeof Module.FS.syncfs === 'function') { discoveredFS = Module.FS; discoveredFSPath = 'Module.FS'; return discoveredFS; } } catch (e) { }
+
+            // Path 4: global FS
+            try { if (typeof FS !== 'undefined' && typeof FS.syncfs === 'function') { discoveredFS = FS; discoveredFSPath = 'window.FS'; return discoveredFS; } } catch (e) { }
+
+            // Path 5: scan all window properties
+            try {
+                for (const key of Object.getOwnPropertyNames(window)) {
+                    try {
+                        const val = window[key];
+                        if (val && typeof val === 'object' && typeof val.syncfs === 'function' && typeof val.readdir === 'function') {
+                            discoveredFS = val; discoveredFSPath = 'window.' + key; return discoveredFS;
+                        }
+                    } catch (e) { }
+                }
+            } catch (e) { }
+
             return null;
         }
 
@@ -258,14 +800,14 @@
 
                 const fs = getFS();
                 if (!fs || typeof fs.syncfs !== 'function') {
-                    if (showNotification) showSaveStatus('FS not ready yet — try again in a moment', 'error');
-                    console.warn('[SaveSystem] FS not available yet');
+                    if (showNotification) showSaveStatus('FS not found — click "Scan for FS" to locate it', 'error');
+                    console.warn('[SaveSystem] FS not available. Run the scanner to find it.');
                     resolve();
                     return;
                 }
 
                 isFSSyncing = true;
-                if (showNotification) showSaveStatus('Saving...', 'info');
+                if (showNotification) showSaveStatus('Saving... (via ' + (discoveredFSPath || 'unknown') + ')', 'info');
 
                 try {
                     fs.syncfs(false, function (err) {
@@ -275,7 +817,7 @@
                             if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
                             reject(err);
                         } else {
-                            console.log('[SaveSystem] FS synced to IndexedDB ✓');
+                            console.log('[SaveSystem] FS synced to IndexedDB ✓ (via ' + discoveredFSPath + ')');
                             if (showNotification) showSaveStatus('Progress saved!', 'success');
                             resolve();
                         }
@@ -298,45 +840,30 @@
             console.log('[SaveSystem] Auto-save started (every ' + (AUTOSAVE_INTERVAL_MS / 1000) + 's)');
         }
 
-        // ---- Export: dump IDBFS IndexedDB to downloadable JSON ----
+        // ---- Export ----
         async function exportSaveData() {
             try {
                 showSaveStatus('Exporting save data...', 'info');
-                await syncFS(false); // flush first
+                await syncFS(false);
 
-                const exportData = {
-                    version: 2,
-                    game: PRODUCT_NAME,
-                    timestamp: new Date().toISOString(),
-                    databases: {}
-                };
-
-                // Find all relevant IDB databases
+                const exportData = { version: 2, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
                 let dbNames = [IDBFS_DB_NAME];
+
                 if (indexedDB.databases) {
                     const allDbs = await indexedDB.databases();
                     for (const db of allDbs) {
-                        if (db.name && (db.name.includes('idbfs') || db.name.includes(PRODUCT_NAME) || db.name.includes('unity'))) {
-                            if (!dbNames.includes(db.name)) dbNames.push(db.name);
-                        }
+                        if (db.name && !dbNames.includes(db.name)) dbNames.push(db.name);
                     }
                 }
 
                 for (const dbName of dbNames) {
-                    try {
-                        exportData.databases[dbName] = await exportIDB(dbName);
-                    } catch (e) {
-                        console.warn('[SaveSystem] Could not export DB:', dbName, e);
-                    }
+                    try { exportData.databases[dbName] = await exportIDB(dbName); } catch (e) { console.warn('[Export] skip DB:', dbName, e); }
                 }
 
-                // Also export localStorage keys related to Unity
                 const prefs = {};
                 for (let i = 0; i < localStorage.length; i++) {
                     const key = localStorage.key(i);
-                    if (key.includes(PRODUCT_NAME) || key.includes('unity') || key.includes('Unity')) {
-                        prefs[key] = localStorage.getItem(key);
-                    }
+                    prefs[key] = localStorage.getItem(key);
                 }
                 exportData.playerPrefs = prefs;
 
@@ -344,11 +871,8 @@
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'CloverPit_Save_' + new Date().toISOString().slice(0, 10) + '.cloverpit';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
                 URL.revokeObjectURL(a.href);
-
                 showSaveStatus('Save exported!', 'success');
             } catch (e) {
                 console.error('[SaveSystem] Export error:', e);
@@ -364,11 +888,8 @@
                     const db = req.result;
                     const names = Array.from(db.objectStoreNames);
                     if (names.length === 0) { db.close(); resolve({}); return; }
-
                     const tx = db.transaction(names, 'readonly');
-                    const data = {};
-                    let done = 0;
-
+                    const data = {}; let done = 0;
                     names.forEach(name => {
                         const store = tx.objectStore(name);
                         const keysReq = store.getAllKeys();
@@ -394,27 +915,19 @@
             });
         }
 
-        // ---- Import: restore from exported JSON ----
+        // ---- Import ----
         async function importSaveData(file) {
             try {
                 showSaveStatus('Importing save data...', 'info');
                 const importData = JSON.parse(await file.text());
-
-                if (!importData.databases || importData.game !== PRODUCT_NAME) {
-                    showSaveStatus('Invalid save file!', 'error');
-                    return;
-                }
+                if (!importData.databases || importData.game !== PRODUCT_NAME) { showSaveStatus('Invalid save file!', 'error'); return; }
 
                 for (const [dbName, storeData] of Object.entries(importData.databases)) {
                     await importIDB(dbName, storeData);
                 }
-
                 if (importData.playerPrefs) {
-                    for (const [k, v] of Object.entries(importData.playerPrefs)) {
-                        localStorage.setItem(k, v);
-                    }
+                    for (const [k, v] of Object.entries(importData.playerPrefs)) localStorage.setItem(k, v);
                 }
-
                 showSaveStatus('Save imported! Reloading...', 'success');
                 setTimeout(() => location.reload(), 1500);
             } catch (e) {
@@ -437,7 +950,6 @@
                     const db = req.result;
                     const names = Object.keys(storeData).filter(n => db.objectStoreNames.contains(n));
                     if (names.length === 0) { db.close(); resolve(); return; }
-
                     const tx = db.transaction(names, 'readwrite');
                     names.forEach(name => {
                         const store = tx.objectStore(name);
@@ -458,14 +970,13 @@
         }
 
         // ---- Button handlers ----
+        document.getElementById('btn-scan').addEventListener('click', () => runScanAndDisplay());
         document.getElementById('btn-save').addEventListener('click', () => syncFS(true));
         document.getElementById('btn-export').addEventListener('click', () => exportSaveData());
         document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file-input').click());
         document.getElementById('import-file-input').addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
-                if (confirm('This will overwrite your current save data. Are you sure?')) {
-                    importSaveData(e.target.files[0]);
-                }
+                if (confirm('This will overwrite your current save data. Are you sure?')) importSaveData(e.target.files[0]);
                 e.target.value = '';
             }
         });
@@ -474,10 +985,9 @@
         window.addEventListener('beforeunload', () => {
             try {
                 const fs = getFS();
-                if (fs && typeof fs.syncfs === 'function') fs.syncfs(false, () => { });
-            } catch (e) { /* best effort */ }
+                if (fs) fs.syncfs(false, () => { });
+            } catch (e) { }
         });
-
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') syncFS(false).catch(() => { });
         });
@@ -537,8 +1047,6 @@
                 productName: "CloverPit",
                 productVersion: "1.3",
                 showBanner: function (msg, type) { console.log('[Unity] ' + type + ': ' + msg); },
-
-                // KEY: tells the framework to auto-persist /idbfs writes to IndexedDB
                 autoSyncPersistentDataPath: true,
             };
 
@@ -565,21 +1073,31 @@
                     document.getElementById('save-controls').classList.add('visible');
                     document.getElementById('autosave-indicator').classList.add('visible');
 
-                    // Start periodic auto-sync
+                    // Start auto-save
                     startAutoSave();
 
-                    // Log FS availability for debugging
+                    // Try to auto-discover FS after a short delay
                     setTimeout(() => {
                         const fs = getFS();
                         if (fs) {
-                            console.log('[SaveSystem] ✓ FS available via unityInstance.Module.FS');
-                            console.log('[SaveSystem] ✓ /idbfs mounted, autoSyncPersistentDataPath enabled');
-                            showSaveStatus('Save system ready!', 'success');
+                            console.log('[SaveSystem] ✓ FS auto-discovered at: ' + discoveredFSPath);
+                            showSaveStatus('Save system ready! (via ' + discoveredFSPath + ')', 'success');
                         } else {
-                            console.warn('[SaveSystem] ✗ Could not access FS — saves may not work');
-                            showSaveStatus('Warning: FS not accessible', 'error');
+                            console.warn('[SaveSystem] FS not auto-found. Click "Scan for FS" to do a deep search.');
+                            showSaveStatus('FS not found yet — click "Scan for FS"', 'error');
                         }
                     }, 3000);
+
+                    // Try again after 10s (some builds are slow to expose FS)
+                    setTimeout(() => {
+                        if (!discoveredFS) {
+                            const fs = getFS();
+                            if (fs) {
+                                console.log('[SaveSystem] ✓ FS found on delayed check: ' + discoveredFSPath);
+                                showSaveStatus('Save system ready! (via ' + discoveredFSPath + ')', 'success');
+                            }
+                        }
+                    }, 10000);
 
                     console.log('[SaveSystem] Game loaded, save system active');
                 }).catch((message) => {
