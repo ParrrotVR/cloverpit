@@ -217,11 +217,72 @@
 
     <input type="file" id="import-file-input" accept=".json,.cloverpit" style="display: none;">
 
+    <!-- ================================================================
+         FRAMEWORK PATCHER
+         Intercepts the loader's script creation to patch framework.js
+         before it executes. Injects "window.__gameFS=FS;" inside the
+         framework closure so we can call FS.syncfs() from outside.
+         ================================================================ -->
+    <script>
+        // Monkey-patch document.createElement to intercept the framework script tag.
+        // When the Unity loader creates a <script> with src containing "framework",
+        // we fetch the source, patch it, and load the patched version instead.
+        (function () {
+            var _origCreateElement = document.createElement.bind(document);
+            document.createElement = function (tagName) {
+                var el = _origCreateElement(tagName);
+                if (tagName.toLowerCase() === 'script') {
+                    // Intercept the 'src' setter
+                    var _origSrc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+                    var _patchApplied = false;
+
+                    Object.defineProperty(el, 'src', {
+                        set: function (url) {
+                            // Check if this is the framework script
+                            if (!_patchApplied && typeof url === 'string' && url.indexOf('framework') !== -1) {
+                                _patchApplied = true;
+                                console.log('[SaveSystem] Intercepted framework script:', url);
+
+                                // Fetch, patch, and load as blob
+                                fetch(url)
+                                    .then(function (r) { return r.text(); })
+                                    .then(function (src) {
+                                        var target = 'Module.__unityIdbfsMount=FS.mount';
+                                        var patch = 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;Module.__unityIdbfsMount=FS.mount';
+                                        if (src.indexOf(target) !== -1) {
+                                            src = src.replace(target, patch);
+                                            console.log('[SaveSystem] ✓ Framework patched! FS will be exposed as window.__gameFS');
+                                        } else {
+                                            console.warn('[SaveSystem] ✗ Patch target not found, FS capture may not work');
+                                        }
+                                        var blob = new Blob([src], { type: 'application/javascript' });
+                                        var blobUrl = URL.createObjectURL(blob);
+                                        _origSrc.set.call(el, blobUrl);
+                                    })
+                                    .catch(function (err) {
+                                        console.error('[SaveSystem] Patch failed, loading original:', err);
+                                        _origSrc.set.call(el, url);
+                                    });
+                            } else {
+                                _origSrc.set.call(el, url);
+                            }
+                        },
+                        get: function () {
+                            return _origSrc.get.call(el);
+                        },
+                        configurable: true
+                    });
+                }
+                return el;
+            };
+            console.log('[SaveSystem] v6 — createElement interceptor installed');
+        })();
+    </script>
+
     <script>
         // =========================================================================
-        //  SAVE SYSTEM v5 — patches framework.js to expose FS before loading
+        //  SAVE SYSTEM v6
         // =========================================================================
-        console.log('[SaveSystem] v5 loaded');
 
         const AUTOSAVE_INTERVAL_MS = 30000;
         const PRODUCT_NAME = 'CloverPit';
@@ -230,22 +291,21 @@
         let autoSaveTimer = null;
         let isFSSyncing = false;
 
-        // Will be set by the patched framework code
-        window.__gameFS = null;
-
         // ---- Toast notification ----
-        function showSaveStatus(message, type = 'info') {
-            const el = document.getElementById('save-status');
+        function showSaveStatus(message, type) {
+            type = type || 'info';
+            var el = document.getElementById('save-status');
             el.querySelector('.icon').textContent = { info: '💾', success: '✅', error: '❌' }[type] || '💾';
             el.querySelector('.text').textContent = message;
             el.className = 'visible ' + type;
             clearTimeout(el._hideTimer);
-            el._hideTimer = setTimeout(() => { el.className = ''; }, 4000);
+            el._hideTimer = setTimeout(function () { el.className = ''; }, 4000);
         }
 
-        // ---- Core: sync the filesystem to IndexedDB ----
-        function syncFS(showNotification = true) {
-            return new Promise((resolve, reject) => {
+        // ---- Core: sync FS to IndexedDB ----
+        function syncFS(showNotification) {
+            if (showNotification === undefined) showNotification = true;
+            return new Promise(function (resolve, reject) {
                 if (isFSSyncing) { resolve(); return; }
 
                 if (!window.__gameFS) {
@@ -283,8 +343,8 @@
         // ---- Auto-save timer ----
         function startAutoSave() {
             if (autoSaveTimer) clearInterval(autoSaveTimer);
-            autoSaveTimer = setInterval(() => {
-                syncFS(false).catch(() => { });
+            autoSaveTimer = setInterval(function () {
+                syncFS(false).catch(function () { });
             }, AUTOSAVE_INTERVAL_MS);
             console.log('[SaveSystem] Auto-save started (every ' + (AUTOSAVE_INTERVAL_MS / 1000) + 's)');
         }
@@ -293,31 +353,31 @@
         async function exportSaveData() {
             try {
                 showSaveStatus('Exporting save data...', 'info');
-                await syncFS(false).catch(() => { });
+                await syncFS(false).catch(function () { });
 
-                const exportData = { version: 3, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
-                let dbNames = ['/idbfs'];
+                var exportData = { version: 3, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
+                var dbNames = ['/idbfs'];
 
                 if (indexedDB.databases) {
-                    const allDbs = await indexedDB.databases();
-                    for (const db of allDbs) {
-                        if (db.name && !dbNames.includes(db.name)) dbNames.push(db.name);
+                    var allDbs = await indexedDB.databases();
+                    for (var i = 0; i < allDbs.length; i++) {
+                        if (allDbs[i].name && dbNames.indexOf(allDbs[i].name) === -1) dbNames.push(allDbs[i].name);
                     }
                 }
 
-                for (const dbName of dbNames) {
-                    try { exportData.databases[dbName] = await exportIDB(dbName); } catch (e) { console.warn('[Export] skip:', dbName, e); }
+                for (var j = 0; j < dbNames.length; j++) {
+                    try { exportData.databases[dbNames[j]] = await exportIDB(dbNames[j]); } catch (e) { console.warn('[Export] skip:', dbNames[j], e); }
                 }
 
-                const prefs = {};
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
+                var prefs = {};
+                for (var k = 0; k < localStorage.length; k++) {
+                    var key = localStorage.key(k);
                     prefs[key] = localStorage.getItem(key);
                 }
                 exportData.playerPrefs = prefs;
 
-                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                const a = document.createElement('a');
+                var blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                var a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = 'CloverPit_Save_' + new Date().toISOString().slice(0, 10) + '.cloverpit';
                 document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -330,36 +390,37 @@
         }
 
         function exportIDB(dbName) {
-            return new Promise((resolve, reject) => {
-                const req = indexedDB.open(dbName);
-                req.onerror = () => reject(req.error);
-                req.onsuccess = () => {
-                    const db = req.result;
-                    const names = Array.from(db.objectStoreNames);
+            return new Promise(function (resolve, reject) {
+                var req = indexedDB.open(dbName);
+                req.onerror = function () { reject(req.error); };
+                req.onsuccess = function () {
+                    var db = req.result;
+                    var names = Array.from(db.objectStoreNames);
                     if (names.length === 0) { db.close(); resolve({}); return; }
-                    const tx = db.transaction(names, 'readonly');
-                    const data = {}; let done = 0;
-                    names.forEach(name => {
-                        const store = tx.objectStore(name);
-                        const keysReq = store.getAllKeys();
-                        const valsReq = store.getAll();
+                    var tx = db.transaction(names, 'readonly');
+                    var data = {}; var done = 0;
+                    names.forEach(function (name) {
+                        var store = tx.objectStore(name);
+                        var keysReq = store.getAllKeys();
+                        var valsReq = store.getAll();
                         Promise.all([
-                            new Promise(r => { keysReq.onsuccess = () => r(keysReq.result); }),
-                            new Promise(r => { valsReq.onsuccess = () => r(valsReq.result); })
-                        ]).then(([keys, vals]) => {
+                            new Promise(function (r) { keysReq.onsuccess = function () { r(keysReq.result); }; }),
+                            new Promise(function (r) { valsReq.onsuccess = function () { r(valsReq.result); }; })
+                        ]).then(function (results) {
+                            var keys = results[0], vals = results[1];
                             data[name] = {
-                                keys,
-                                values: vals.map(v => {
+                                keys: keys,
+                                values: vals.map(function (v) {
                                     if (v instanceof ArrayBuffer) return { __t: 'AB', d: Array.from(new Uint8Array(v)) };
-                                    if (v && v.contents instanceof Uint8Array) return { ...v, contents: { __t: 'U8', d: Array.from(v.contents) } };
-                                    if (v && v.contents instanceof Int8Array) return { ...v, contents: { __t: 'I8', d: Array.from(v.contents) } };
+                                    if (v && v.contents instanceof Uint8Array) return Object.assign({}, v, { contents: { __t: 'U8', d: Array.from(v.contents) } });
+                                    if (v && v.contents instanceof Int8Array) return Object.assign({}, v, { contents: { __t: 'I8', d: Array.from(v.contents) } });
                                     return v;
                                 })
                             };
                             if (++done === names.length) { db.close(); resolve(data); }
                         });
                     });
-                    tx.onerror = () => { db.close(); reject(tx.error); };
+                    tx.onerror = function () { db.close(); reject(tx.error); };
                 };
             });
         }
@@ -368,20 +429,20 @@
         async function importSaveData(file) {
             try {
                 showSaveStatus('Importing save data...', 'info');
-                const importData = JSON.parse(await file.text());
+                var importData = JSON.parse(await file.text());
                 if (!importData.databases || importData.game !== PRODUCT_NAME) {
                     showSaveStatus('Invalid save file!', 'error');
                     return;
                 }
 
-                for (const [dbName, storeData] of Object.entries(importData.databases)) {
-                    await importIDB(dbName, storeData);
+                for (var entry of Object.entries(importData.databases)) {
+                    await importIDB(entry[0], entry[1]);
                 }
                 if (importData.playerPrefs) {
-                    for (const [k, v] of Object.entries(importData.playerPrefs)) localStorage.setItem(k, v);
+                    for (var pe of Object.entries(importData.playerPrefs)) localStorage.setItem(pe[0], pe[1]);
                 }
                 showSaveStatus('Save imported! Reloading...', 'success');
-                setTimeout(() => location.reload(), 1500);
+                setTimeout(function () { location.reload(); }, 1500);
             } catch (e) {
                 console.error('[SaveSystem] Import error:', e);
                 showSaveStatus('Import failed: ' + e.message, 'error');
@@ -389,43 +450,43 @@
         }
 
         function importIDB(dbName, storeData) {
-            return new Promise((resolve, reject) => {
-                const req = indexedDB.open(dbName);
-                req.onerror = () => reject(req.error);
-                req.onupgradeneeded = (e) => {
-                    const db = e.target.result;
-                    for (const name of Object.keys(storeData)) {
+            return new Promise(function (resolve, reject) {
+                var req = indexedDB.open(dbName);
+                req.onerror = function () { reject(req.error); };
+                req.onupgradeneeded = function (e) {
+                    var db = e.target.result;
+                    for (var name of Object.keys(storeData)) {
                         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
                     }
                 };
-                req.onsuccess = () => {
-                    const db = req.result;
-                    const names = Object.keys(storeData).filter(n => db.objectStoreNames.contains(n));
+                req.onsuccess = function () {
+                    var db = req.result;
+                    var names = Object.keys(storeData).filter(function (n) { return db.objectStoreNames.contains(n); });
                     if (names.length === 0) { db.close(); resolve(); return; }
-                    const tx = db.transaction(names, 'readwrite');
-                    names.forEach(name => {
-                        const store = tx.objectStore(name);
-                        const { keys, values } = storeData[name];
+                    var tx = db.transaction(names, 'readwrite');
+                    names.forEach(function (name) {
+                        var store = tx.objectStore(name);
+                        var entry = storeData[name];
                         store.clear();
-                        keys.forEach((key, i) => {
-                            let v = values[i];
-                            if (v && v.contents && v.contents.__t === 'U8') v = { ...v, contents: new Uint8Array(v.contents.d) };
-                            if (v && v.contents && v.contents.__t === 'I8') v = { ...v, contents: new Int8Array(v.contents.d) };
+                        entry.keys.forEach(function (key, i) {
+                            var v = entry.values[i];
+                            if (v && v.contents && v.contents.__t === 'U8') v = Object.assign({}, v, { contents: new Uint8Array(v.contents.d) });
+                            if (v && v.contents && v.contents.__t === 'I8') v = Object.assign({}, v, { contents: new Int8Array(v.contents.d) });
                             if (v && v.__t === 'AB') v = new Uint8Array(v.d).buffer;
                             store.put(v, key);
                         });
                     });
-                    tx.oncomplete = () => { db.close(); resolve(); };
-                    tx.onerror = () => { db.close(); reject(tx.error); };
+                    tx.oncomplete = function () { db.close(); resolve(); };
+                    tx.onerror = function () { db.close(); reject(tx.error); };
                 };
             });
         }
 
         // ---- Button handlers ----
-        document.getElementById('btn-save').addEventListener('click', () => syncFS(true));
-        document.getElementById('btn-export').addEventListener('click', () => exportSaveData());
-        document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file-input').click());
-        document.getElementById('import-file-input').addEventListener('change', (e) => {
+        document.getElementById('btn-save').addEventListener('click', function () { syncFS(true); });
+        document.getElementById('btn-export').addEventListener('click', function () { exportSaveData(); });
+        document.getElementById('btn-import').addEventListener('click', function () { document.getElementById('import-file-input').click(); });
+        document.getElementById('import-file-input').addEventListener('change', function (e) {
             if (e.target.files.length > 0) {
                 if (confirm('This will overwrite your current save data. Are you sure?')) importSaveData(e.target.files[0]);
                 e.target.value = '';
@@ -433,106 +494,56 @@
         });
 
         // ---- Sync on page close/hide ----
-        window.addEventListener('beforeunload', () => {
+        window.addEventListener('beforeunload', function () {
             try {
-                if (window.__gameFS) window.__gameFS.syncfs(false, () => { });
+                if (window.__gameFS) window.__gameFS.syncfs(false, function () { });
             } catch (e) { }
         });
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') syncFS(false).catch(() => { });
+        document.addEventListener('visibilitychange', function () {
+            if (document.visibilityState === 'hidden') syncFS(false).catch(function () { });
         });
 
         // =========================================================================
-        //  GAME LOADER — fetches & patches framework.js to expose FS
+        //  GAME LOADER
         // =========================================================================
 
         var loadingText = document.querySelector("#loading-text");
-        let loadedBytes = 0;
+        var loadedBytes = 0;
 
         async function fetchWithProgress(url) {
-            const response = await fetch(url);
-            const reader = response.body.getReader();
-            let chunks = [], received = 0;
+            var response = await fetch(url);
+            var reader = response.body.getReader();
+            var chunks = [], received = 0;
             while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                received += value.length;
-                loadedBytes += value.length;
-                chunks.push(value);
+                var result = await reader.read();
+                if (result.done) break;
+                received += result.value.length;
+                loadedBytes += result.value.length;
+                chunks.push(result.value);
                 loadingText.textContent = 'LOADING... ' + (loadedBytes / (1024 * 1024)).toFixed(2) + ' MB / 86.96 MB';
             }
-            let buf = new Uint8Array(received), offset = 0;
-            for (let c of chunks) { buf.set(c, offset); offset += c.length; }
+            var buf = new Uint8Array(received), offset = 0;
+            for (var c of chunks) { buf.set(c, offset); offset += c.length; }
             return buf.buffer;
         }
 
         async function mergeFiles(parts) {
-            const buffers = await Promise.all(parts.map(p => fetchWithProgress(p)));
+            var buffers = await Promise.all(parts.map(function (p) { return fetchWithProgress(p); }));
             return URL.createObjectURL(new Blob(buffers));
         }
 
         function getParts(file, start, end) {
-            let parts = [];
-            for (let i = start; i <= end; i++) parts.push(file + ".part" + i);
+            var parts = [];
+            for (var i = start; i <= end; i++) parts.push(file + ".part" + i);
             return parts;
         }
 
         (async () => {
-            // Step 1: Download game assets (data + wasm) with progress
-            const [dataUrl, wasmUrl] = await Promise.all([
+            var [dataUrl, wasmUrl] = await Promise.all([
                 mergeFiles(getParts("Build/CloverPit.data", 1, 3)),
                 mergeFiles(getParts("Build/CloverPit.wasm", 1, 3)),
             ]);
 
-            // Step 2: Fetch framework.js and patch it to expose FS
-            loadingText.textContent = 'Patching framework...';
-            console.log('[SaveSystem] Fetching framework.js to patch...');
-
-            let frameworkUrl = "Build/CloverPit.framework.js";
-            try {
-                const frameworkResponse = await fetch("Build/CloverPit.framework.js");
-                let frameworkText = await frameworkResponse.text();
-
-                // Inject "window.__gameFS=FS;" right before the __unityIdbfsMount assignment.
-                // This code runs INSIDE the framework closure where FS is a local variable.
-                //
-                // Original: Module.__unityIdbfsMount=FS.mount(IDBFS,...
-                // Patched:  window.__gameFS=FS;Module.__unityIdbfsMount=FS.mount(IDBFS,...
-                const target = 'Module.__unityIdbfsMount=FS.mount';
-                const patch = 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;Module.__unityIdbfsMount=FS.mount';
-
-                if (frameworkText.includes(target)) {
-                    frameworkText = frameworkText.replace(target, patch);
-                    console.log('[SaveSystem] ✓ Framework patched successfully! Injected FS capture.');
-                } else {
-                    console.warn('[SaveSystem] ✗ Could not find patch target in framework. Trying alternate...');
-                    // Alternate: try with spaces or different formatting
-                    const alt1 = 'Module.__unityIdbfsMount = FS.mount';
-                    if (frameworkText.includes(alt1)) {
-                        frameworkText = frameworkText.replace(alt1, 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;' + alt1);
-                        console.log('[SaveSystem] ✓ Framework patched with alternate target.');
-                    } else {
-                        // Last resort: inject at the start of unityFileSystemInit default function
-                        const alt2 = 'FS.mkdir("/idbfs")';
-                        if (frameworkText.includes(alt2)) {
-                            frameworkText = frameworkText.replace(alt2, 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;FS.mkdir("/idbfs")');
-                            console.log('[SaveSystem] ✓ Framework patched at FS.mkdir target.');
-                        } else {
-                            console.error('[SaveSystem] ✗ Could not patch framework — no known target found!');
-                        }
-                    }
-                }
-
-                // Create blob URL from patched framework
-                const blob = new Blob([frameworkText], { type: 'application/javascript' });
-                frameworkUrl = URL.createObjectURL(blob);
-                console.log('[SaveSystem] Using patched framework blob URL');
-            } catch (e) {
-                console.error('[SaveSystem] Failed to fetch/patch framework, using original:', e);
-                // Fall back to original URL
-            }
-
-            // Step 3: Boot Unity with patched framework
             var canvas = document.querySelector("#unity-canvas");
             var loadingBar = document.querySelector("#unity-loading-bar");
             var progressBarFull = document.querySelector("#unity-progress-bar-full");
@@ -540,7 +551,7 @@
             var config = {
                 arguments: [],
                 dataUrl: dataUrl,
-                frameworkUrl: frameworkUrl,
+                frameworkUrl: "Build/CloverPit.framework.js",
                 codeUrl: wasmUrl,
                 streamingAssetsUrl: "StreamingAssets",
                 companyName: "Panik Arcade",
@@ -561,38 +572,36 @@
 
             var script = document.createElement("script");
             script.src = "Build/CloverPit.loader.js";
-            script.onload = () => {
-                createUnityInstance(canvas, config, (progress) => {
+            script.onload = function () {
+                createUnityInstance(canvas, config, function (progress) {
                     progressBarFull.style.width = 100 * progress + "%";
-                }).then((instance) => {
+                }).then(function (instance) {
                     unityInstance = instance;
                     loadingBar.style.display = "none";
                     loadingText.remove();
 
-                    // Show save UI
                     document.getElementById('save-controls').classList.add('visible');
                     document.getElementById('autosave-indicator').classList.add('visible');
 
-                    // Start auto-save
                     startAutoSave();
 
-                    // Verify FS was captured by the patch
-                    setTimeout(() => {
+                    // Verify FS was captured
+                    setTimeout(function () {
                         if (window.__gameFS && typeof window.__gameFS.syncfs === 'function') {
                             console.log('[SaveSystem] ✓ FS captured! syncfs available.');
                             showSaveStatus('Save system ready!', 'success');
                             try {
-                                const contents = window.__gameFS.readdir('/idbfs');
+                                var contents = window.__gameFS.readdir('/idbfs');
                                 console.log('[SaveSystem] /idbfs contents:', contents);
-                            } catch (e) { console.log('[SaveSystem] /idbfs readdir:', e.message); }
+                            } catch (e) { }
                         } else {
                             console.error('[SaveSystem] ✗ FS not captured. __gameFS:', window.__gameFS);
-                            showSaveStatus('FS patch may have failed — check console', 'error');
+                            showSaveStatus('FS not captured — patch may have failed', 'error');
                         }
-                    }, 2000);
+                    }, 3000);
 
                     console.log('[SaveSystem] Game loaded');
-                }).catch((message) => {
+                }).catch(function (message) {
                     console.error('[Unity] Error:', message);
                 });
             };
