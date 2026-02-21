@@ -11,7 +11,6 @@
     <link rel="shortcut icon" href="TemplateData/favicon.ico">
     <link rel="stylesheet" href="TemplateData/style.css">
     <style>
-        /* ===== Global Reset & Body ===== */
         * {
             margin: 0;
             padding: 0;
@@ -24,11 +23,9 @@
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
         }
 
-        /* ===== Loading Screen ===== */
         #loading-text {
             color: #c8b6ff;
             font-size: 36px;
-            font-family: 'Segoe UI', system-ui, sans-serif;
             font-weight: 700;
             text-align: center;
             margin-top: 24px;
@@ -49,19 +46,17 @@
             }
         }
 
-        /* ===== Save Status Toast ===== */
+        /* Save status toast — high z-index to sit above Unity canvas */
         #save-status {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            background: rgba(15, 15, 25, 0.92);
+            background: rgba(15, 15, 25, 0.95);
             backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(200, 182, 255, 0.2);
+            border: 1px solid rgba(200, 182, 255, 0.25);
             border-radius: 12px;
             padding: 12px 20px;
             color: #c8b6ff;
-            font-family: 'Segoe UI', system-ui, sans-serif;
             font-size: 14px;
             font-weight: 500;
             display: flex;
@@ -70,9 +65,9 @@
             opacity: 0;
             transform: translateY(20px);
             transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-            z-index: 1000;
+            z-index: 99999;
             pointer-events: none;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
         }
 
         #save-status.visible {
@@ -82,28 +77,23 @@
         }
 
         #save-status.success {
-            border-color: rgba(80, 220, 120, 0.4);
+            border-color: rgba(80, 220, 120, 0.5);
             color: #50dc78;
         }
 
         #save-status.error {
-            border-color: rgba(255, 100, 100, 0.4);
+            border-color: rgba(255, 100, 100, 0.5);
             color: #ff6464;
         }
 
-        #save-status .icon {
-            font-size: 18px;
-            flex-shrink: 0;
-        }
-
-        /* ===== Save Controls Bar ===== */
+        /* Save controls — top right, above canvas */
         #save-controls {
             position: fixed;
             top: 12px;
             right: 12px;
             display: flex;
             gap: 8px;
-            z-index: 999;
+            z-index: 99999;
             opacity: 0;
             transition: opacity 0.5s ease;
         }
@@ -113,13 +103,11 @@
         }
 
         #save-controls button {
-            background: rgba(15, 15, 25, 0.85);
+            background: rgba(15, 15, 25, 0.9);
             backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(200, 182, 255, 0.2);
+            border: 1px solid rgba(200, 182, 255, 0.25);
             border-radius: 10px;
             color: #c8b6ff;
-            font-family: 'Segoe UI', system-ui, sans-serif;
             font-size: 13px;
             font-weight: 600;
             padding: 8px 16px;
@@ -128,25 +116,20 @@
             align-items: center;
             gap: 6px;
             transition: all 0.25s ease;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
         }
 
         #save-controls button:hover {
             background: rgba(200, 182, 255, 0.15);
-            border-color: rgba(200, 182, 255, 0.4);
+            border-color: rgba(200, 182, 255, 0.5);
             transform: translateY(-1px);
-            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
         }
 
         #save-controls button:active {
             transform: translateY(0);
         }
 
-        #save-controls button .btn-icon {
-            font-size: 16px;
-        }
-
-        /* ===== Auto-save indicator (subtle dot) ===== */
+        /* Auto-save dot indicator */
         #autosave-indicator {
             position: fixed;
             bottom: 20px;
@@ -156,7 +139,7 @@
             gap: 8px;
             opacity: 0;
             transition: opacity 0.5s ease;
-            z-index: 999;
+            z-index: 99999;
         }
 
         #autosave-indicator.visible {
@@ -174,7 +157,6 @@
 
         #autosave-indicator .label {
             color: rgba(200, 200, 220, 0.5);
-            font-family: 'Segoe UI', system-ui, sans-serif;
             font-size: 11px;
             font-weight: 500;
             letter-spacing: 0.5px;
@@ -195,10 +177,8 @@
 </head>
 
 <body>
-    <!-- Loading Text -->
     <div id="loading-text">LOADING...</div>
 
-    <!-- Unity Container -->
     <div id="unity-container">
         <canvas id="unity-canvas" width=960 height=540 tabindex="-1"></canvas>
         <div id="unity-loading-bar">
@@ -210,292 +190,232 @@
         <div id="unity-warning"> </div>
     </div>
 
-    <!-- Save Controls (shown after game loads) -->
     <div id="save-controls">
         <button id="btn-save" title="Manually sync save data to browser storage">
-            <span class="btn-icon">💾</span> Save Now
+            <span>💾</span> Save Now
         </button>
         <button id="btn-export" title="Export your save data as a downloadable file">
-            <span class="btn-icon">📤</span> Export Save
+            <span>📤</span> Export Save
         </button>
         <button id="btn-import" title="Import a previously exported save file">
-            <span class="btn-icon">📥</span> Import Save
+            <span>📥</span> Import Save
         </button>
     </div>
 
-    <!-- Auto-save indicator -->
     <div id="autosave-indicator">
         <div class="dot"></div>
         <span class="label">AUTO-SAVE ON</span>
     </div>
 
-    <!-- Save status toast -->
     <div id="save-status">
         <span class="icon"></span>
         <span class="text"></span>
     </div>
 
-    <!-- Hidden file input for import -->
     <input type="file" id="import-file-input" accept=".json,.cloverpit" style="display: none;">
 
     <script>
         // =========================================================================
-        //  SAVE SYSTEM — IndexedDB + FS.syncfs for Unity WebGL persistence
+        //  SAVE SYSTEM — uses unityInstance.Module.FS (module-scoped, NOT global)
         // =========================================================================
 
-        const SAVE_DB_NAME = '/idbfs';  // Unity's default IDBFS database name
-        const SAVE_EXPORT_DB = 'CloverPitSaveBackup'; // Our backup DB name
-        const AUTOSAVE_INTERVAL_MS = 30000; // Auto-sync every 30 seconds
+        const AUTOSAVE_INTERVAL_MS = 30000; // 30 seconds
         const PRODUCT_NAME = 'CloverPit';
+        const IDBFS_DB_NAME = '/idbfs'; // Unity's IDBFS mountpoint used as IDB name
 
         let unityInstance = null;
         let autoSaveTimer = null;
         let isFSSyncing = false;
 
-        // ---- Toast notification system ----
+        // ---- Toast notification ----
         function showSaveStatus(message, type = 'info') {
             const el = document.getElementById('save-status');
-            const iconEl = el.querySelector('.icon');
-            const textEl = el.querySelector('.text');
-
-            const icons = { info: '💾', success: '✅', error: '❌' };
-            iconEl.textContent = icons[type] || '💾';
-            textEl.textContent = message;
-
+            el.querySelector('.icon').textContent = { info: '💾', success: '✅', error: '❌' }[type] || '💾';
+            el.querySelector('.text').textContent = message;
             el.className = 'visible ' + type;
-
             clearTimeout(el._hideTimer);
-            el._hideTimer = setTimeout(() => {
-                el.className = '';
-            }, 3000);
+            el._hideTimer = setTimeout(() => { el.className = ''; }, 3500);
         }
 
-        // ---- Core: Flush Emscripten IDBFS to IndexedDB ----
+        // ---- Core: get the module-scoped FS from the Unity instance ----
+        function getFS() {
+            // The Unity framework scopes FS inside the module closure.
+            // We access it through the unityInstance → Module chain.
+            if (unityInstance && unityInstance.Module && unityInstance.Module.FS) {
+                return unityInstance.Module.FS;
+            }
+            // Some Unity builds also expose it on the global Module
+            if (typeof Module !== 'undefined' && Module.FS) {
+                return Module.FS;
+            }
+            return null;
+        }
+
+        // ---- Flush Emscripten IDBFS to IndexedDB ----
         function syncFS(showNotification = true) {
             return new Promise((resolve, reject) => {
-                if (isFSSyncing) {
+                if (isFSSyncing) { resolve(); return; }
+
+                const fs = getFS();
+                if (!fs || typeof fs.syncfs !== 'function') {
+                    if (showNotification) showSaveStatus('FS not ready yet — try again in a moment', 'error');
+                    console.warn('[SaveSystem] FS not available yet');
                     resolve();
                     return;
                 }
 
-                // Check if the Module and FS are available
-                if (typeof Module === 'undefined' || typeof Module.FS === 'undefined') {
-                    // Fallback: try the global FS
-                    if (typeof FS !== 'undefined' && typeof FS.syncfs === 'function') {
-                        isFSSyncing = true;
-                        try {
-                            FS.syncfs(false, function (err) {
-                                isFSSyncing = false;
-                                if (err) {
-                                    console.error('[SaveSystem] FS.syncfs error:', err);
-                                    if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
-                                    reject(err);
-                                } else {
-                                    console.log('[SaveSystem] FS synced to IndexedDB successfully');
-                                    if (showNotification) showSaveStatus('Progress saved!', 'success');
-                                    resolve();
-                                }
-                            });
-                        } catch (e) {
-                            isFSSyncing = false;
-                            console.error('[SaveSystem] FS.syncfs exception:', e);
-                            if (showNotification) showSaveStatus('Save error: ' + e.message, 'error');
-                            reject(e);
-                        }
-                    } else {
-                        console.warn('[SaveSystem] FS not yet available, skipping sync');
-                        resolve();
-                    }
-                    return;
-                }
-
-                // Use Module.FS if available
                 isFSSyncing = true;
+                if (showNotification) showSaveStatus('Saving...', 'info');
+
                 try {
-                    Module.FS.syncfs(false, function (err) {
+                    fs.syncfs(false, function (err) {
                         isFSSyncing = false;
                         if (err) {
-                            console.error('[SaveSystem] Module.FS.syncfs error:', err);
+                            console.error('[SaveSystem] syncfs error:', err);
                             if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
                             reject(err);
                         } else {
-                            console.log('[SaveSystem] Module.FS synced to IndexedDB successfully');
+                            console.log('[SaveSystem] FS synced to IndexedDB ✓');
                             if (showNotification) showSaveStatus('Progress saved!', 'success');
                             resolve();
                         }
                     });
                 } catch (e) {
                     isFSSyncing = false;
-                    console.error('[SaveSystem] Module.FS.syncfs exception:', e);
+                    console.error('[SaveSystem] syncfs exception:', e);
                     if (showNotification) showSaveStatus('Save error: ' + e.message, 'error');
                     reject(e);
                 }
             });
         }
 
-        // ---- Auto-save: periodic FS sync ----
+        // ---- Auto-save timer ----
         function startAutoSave() {
             if (autoSaveTimer) clearInterval(autoSaveTimer);
             autoSaveTimer = setInterval(() => {
-                syncFS(false).catch(() => { }); // silent auto-save
+                syncFS(false).catch(() => { });
             }, AUTOSAVE_INTERVAL_MS);
             console.log('[SaveSystem] Auto-save started (every ' + (AUTOSAVE_INTERVAL_MS / 1000) + 's)');
         }
 
-        // ---- Export: dump all IndexedDB data to a JSON file ----
+        // ---- Export: dump IDBFS IndexedDB to downloadable JSON ----
         async function exportSaveData() {
             try {
                 showSaveStatus('Exporting save data...', 'info');
-
-                // First sync to make sure IndexedDB is up to date
-                await syncFS(false);
-
-                // Open Unity's IDBFS database
-                const databases = await indexedDB.databases();
-                const idbfsDbs = databases.filter(db =>
-                    db.name && (db.name.includes('idbfs') || db.name.includes(PRODUCT_NAME) || db.name.includes('unity'))
-                );
-
-                if (idbfsDbs.length === 0) {
-                    // Fallback: try the default path
-                    idbfsDbs.push({ name: '/idbfs' });
-                }
+                await syncFS(false); // flush first
 
                 const exportData = {
-                    version: 1,
+                    version: 2,
                     game: PRODUCT_NAME,
                     timestamp: new Date().toISOString(),
                     databases: {}
                 };
 
-                for (const dbInfo of idbfsDbs) {
-                    try {
-                        const data = await exportDatabase(dbInfo.name);
-                        exportData.databases[dbInfo.name] = data;
-                    } catch (e) {
-                        console.warn('[SaveSystem] Could not export DB:', dbInfo.name, e);
+                // Find all relevant IDB databases
+                let dbNames = [IDBFS_DB_NAME];
+                if (indexedDB.databases) {
+                    const allDbs = await indexedDB.databases();
+                    for (const db of allDbs) {
+                        if (db.name && (db.name.includes('idbfs') || db.name.includes(PRODUCT_NAME) || db.name.includes('unity'))) {
+                            if (!dbNames.includes(db.name)) dbNames.push(db.name);
+                        }
                     }
                 }
 
-                // Also export PlayerPrefs from localStorage
-                const playerPrefs = {};
+                for (const dbName of dbNames) {
+                    try {
+                        exportData.databases[dbName] = await exportIDB(dbName);
+                    } catch (e) {
+                        console.warn('[SaveSystem] Could not export DB:', dbName, e);
+                    }
+                }
+
+                // Also export localStorage keys related to Unity
+                const prefs = {};
                 for (let i = 0; i < localStorage.length; i++) {
                     const key = localStorage.key(i);
                     if (key.includes(PRODUCT_NAME) || key.includes('unity') || key.includes('Unity')) {
-                        playerPrefs[key] = localStorage.getItem(key);
+                        prefs[key] = localStorage.getItem(key);
                     }
                 }
-                exportData.playerPrefs = playerPrefs;
+                exportData.playerPrefs = prefs;
 
-                // Download as file
                 const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                a.href = url;
-                a.download = `CloverPit_Save_${new Date().toISOString().slice(0, 10)}.cloverpit`;
+                a.href = URL.createObjectURL(blob);
+                a.download = 'CloverPit_Save_' + new Date().toISOString().slice(0, 10) + '.cloverpit';
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                URL.revokeObjectURL(a.href);
 
-                showSaveStatus('Save exported successfully!', 'success');
+                showSaveStatus('Save exported!', 'success');
             } catch (e) {
                 console.error('[SaveSystem] Export error:', e);
                 showSaveStatus('Export failed: ' + e.message, 'error');
             }
         }
 
-        function exportDatabase(dbName) {
+        function exportIDB(dbName) {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open(dbName);
-                request.onerror = () => reject(request.error);
-                request.onsuccess = () => {
-                    const db = request.result;
-                    const storeNames = Array.from(db.objectStoreNames);
+                const req = indexedDB.open(dbName);
+                req.onerror = () => reject(req.error);
+                req.onsuccess = () => {
+                    const db = req.result;
+                    const names = Array.from(db.objectStoreNames);
+                    if (names.length === 0) { db.close(); resolve({}); return; }
+
+                    const tx = db.transaction(names, 'readonly');
                     const data = {};
+                    let done = 0;
 
-                    if (storeNames.length === 0) {
-                        db.close();
-                        resolve(data);
-                        return;
-                    }
-
-                    const tx = db.transaction(storeNames, 'readonly');
-                    let completed = 0;
-
-                    storeNames.forEach(storeName => {
-                        const store = tx.objectStore(storeName);
-                        const getAllReq = store.getAll();
-                        const getAllKeysReq = store.getAllKeys();
-
+                    names.forEach(name => {
+                        const store = tx.objectStore(name);
+                        const keysReq = store.getAllKeys();
+                        const valsReq = store.getAll();
                         Promise.all([
-                            new Promise(r => { getAllKeysReq.onsuccess = () => r(getAllKeysReq.result); }),
-                            new Promise(r => { getAllReq.onsuccess = () => r(getAllReq.result); })
-                        ]).then(([keys, values]) => {
-                            data[storeName] = {
-                                keys, values: values.map(v => {
-                                    if (v instanceof ArrayBuffer) {
-                                        return { __type: 'ArrayBuffer', data: Array.from(new Uint8Array(v)) };
-                                    }
-                                    if (v && v.contents instanceof Uint8Array) {
-                                        return {
-                                            ...v,
-                                            contents: { __type: 'Uint8Array', data: Array.from(v.contents) }
-                                        };
-                                    }
-                                    if (v && v.contents instanceof Int8Array) {
-                                        return {
-                                            ...v,
-                                            contents: { __type: 'Int8Array', data: Array.from(v.contents) }
-                                        };
-                                    }
+                            new Promise(r => { keysReq.onsuccess = () => r(keysReq.result); }),
+                            new Promise(r => { valsReq.onsuccess = () => r(valsReq.result); })
+                        ]).then(([keys, vals]) => {
+                            data[name] = {
+                                keys,
+                                values: vals.map(v => {
+                                    if (v instanceof ArrayBuffer) return { __t: 'AB', d: Array.from(new Uint8Array(v)) };
+                                    if (v && v.contents instanceof Uint8Array) return { ...v, contents: { __t: 'U8', d: Array.from(v.contents) } };
+                                    if (v && v.contents instanceof Int8Array) return { ...v, contents: { __t: 'I8', d: Array.from(v.contents) } };
                                     return v;
                                 })
                             };
-                            completed++;
-                            if (completed === storeNames.length) {
-                                db.close();
-                                resolve(data);
-                            }
+                            if (++done === names.length) { db.close(); resolve(data); }
                         });
                     });
-
-                    tx.onerror = () => {
-                        db.close();
-                        reject(tx.error);
-                    };
+                    tx.onerror = () => { db.close(); reject(tx.error); };
                 };
             });
         }
 
-        // ---- Import: restore IndexedDB data from a JSON file ----
+        // ---- Import: restore from exported JSON ----
         async function importSaveData(file) {
             try {
                 showSaveStatus('Importing save data...', 'info');
-
-                const text = await file.text();
-                const importData = JSON.parse(text);
+                const importData = JSON.parse(await file.text());
 
                 if (!importData.databases || importData.game !== PRODUCT_NAME) {
                     showSaveStatus('Invalid save file!', 'error');
                     return;
                 }
 
-                // Import each database
                 for (const [dbName, storeData] of Object.entries(importData.databases)) {
-                    await importDatabase(dbName, storeData);
+                    await importIDB(dbName, storeData);
                 }
 
-                // Import PlayerPrefs
                 if (importData.playerPrefs) {
-                    for (const [key, value] of Object.entries(importData.playerPrefs)) {
-                        localStorage.setItem(key, value);
+                    for (const [k, v] of Object.entries(importData.playerPrefs)) {
+                        localStorage.setItem(k, v);
                     }
                 }
 
                 showSaveStatus('Save imported! Reloading...', 'success');
-
-                // Reload to pick up the imported save
                 setTimeout(() => location.reload(), 1500);
             } catch (e) {
                 console.error('[SaveSystem] Import error:', e);
@@ -503,193 +423,122 @@
             }
         }
 
-        function importDatabase(dbName, storeData) {
+        function importIDB(dbName, storeData) {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open(dbName);
-                request.onerror = () => reject(request.error);
-                request.onupgradeneeded = (e) => {
+                const req = indexedDB.open(dbName);
+                req.onerror = () => reject(req.error);
+                req.onupgradeneeded = (e) => {
                     const db = e.target.result;
-                    for (const storeName of Object.keys(storeData)) {
-                        if (!db.objectStoreNames.contains(storeName)) {
-                            db.createObjectStore(storeName);
-                        }
+                    for (const name of Object.keys(storeData)) {
+                        if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
                     }
                 };
-                request.onsuccess = () => {
-                    const db = request.result;
-                    const storeNames = Object.keys(storeData).filter(
-                        name => db.objectStoreNames.contains(name)
-                    );
+                req.onsuccess = () => {
+                    const db = req.result;
+                    const names = Object.keys(storeData).filter(n => db.objectStoreNames.contains(n));
+                    if (names.length === 0) { db.close(); resolve(); return; }
 
-                    if (storeNames.length === 0) {
-                        db.close();
-                        resolve();
-                        return;
-                    }
-
-                    const tx = db.transaction(storeNames, 'readwrite');
-                    let completed = 0;
-
-                    storeNames.forEach(storeName => {
-                        const store = tx.objectStore(storeName);
-                        const { keys, values } = storeData[storeName];
-
-                        // Clear existing data first
+                    const tx = db.transaction(names, 'readwrite');
+                    names.forEach(name => {
+                        const store = tx.objectStore(name);
+                        const { keys, values } = storeData[name];
                         store.clear();
-
-                        keys.forEach((key, idx) => {
-                            let value = values[idx];
-                            // Restore typed arrays
-                            if (value && value.contents && value.contents.__type === 'Uint8Array') {
-                                value = { ...value, contents: new Uint8Array(value.contents.data) };
-                            }
-                            if (value && value.contents && value.contents.__type === 'Int8Array') {
-                                value = { ...value, contents: new Int8Array(value.contents.data) };
-                            }
-                            if (value && value.__type === 'ArrayBuffer') {
-                                value = new Uint8Array(value.data).buffer;
-                            }
-                            store.put(value, key);
+                        keys.forEach((key, i) => {
+                            let v = values[i];
+                            if (v && v.contents && v.contents.__t === 'U8') v = { ...v, contents: new Uint8Array(v.contents.d) };
+                            if (v && v.contents && v.contents.__t === 'I8') v = { ...v, contents: new Int8Array(v.contents.d) };
+                            if (v && v.__t === 'AB') v = new Uint8Array(v.d).buffer;
+                            store.put(v, key);
                         });
-
-                        completed++;
-                        if (completed === storeNames.length) {
-                            // let transaction complete naturally
-                        }
                     });
-
-                    tx.oncomplete = () => {
-                        db.close();
-                        resolve();
-                    };
-                    tx.onerror = () => {
-                        db.close();
-                        reject(tx.error);
-                    };
+                    tx.oncomplete = () => { db.close(); resolve(); };
+                    tx.onerror = () => { db.close(); reject(tx.error); };
                 };
             });
         }
 
         // ---- Button handlers ----
-        document.getElementById('btn-save').addEventListener('click', () => {
-            syncFS(true);
-        });
-
-        document.getElementById('btn-export').addEventListener('click', () => {
-            exportSaveData();
-        });
-
-        document.getElementById('btn-import').addEventListener('click', () => {
-            document.getElementById('import-file-input').click();
-        });
-
+        document.getElementById('btn-save').addEventListener('click', () => syncFS(true));
+        document.getElementById('btn-export').addEventListener('click', () => exportSaveData());
+        document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file-input').click());
         document.getElementById('import-file-input').addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
                 if (confirm('This will overwrite your current save data. Are you sure?')) {
                     importSaveData(e.target.files[0]);
                 }
-                e.target.value = ''; // reset
+                e.target.value = '';
             }
         });
 
         // ---- Sync on page close/hide ----
-        window.addEventListener('beforeunload', (e) => {
-            // Synchronous attempt to flush
+        window.addEventListener('beforeunload', () => {
             try {
-                if (typeof FS !== 'undefined' && typeof FS.syncfs === 'function') {
-                    FS.syncfs(false, function () { });
-                }
-            } catch (ex) {
-                // best effort
-            }
+                const fs = getFS();
+                if (fs && typeof fs.syncfs === 'function') fs.syncfs(false, () => { });
+            } catch (e) { /* best effort */ }
         });
 
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') {
-                syncFS(false).catch(() => { });
-            }
+            if (document.visibilityState === 'hidden') syncFS(false).catch(() => { });
         });
 
         // =========================================================================
-        //  GAME LOADER — fetch split parts with progress, then boot Unity
+        //  GAME LOADER
         // =========================================================================
 
         var loadingText = document.querySelector("#loading-text");
-        let totalBytes = 0;
         let loadedBytes = 0;
 
         async function fetchWithProgress(url) {
             const response = await fetch(url);
             const reader = response.body.getReader();
-            let chunks = [];
-            let received = 0;
+            let chunks = [], received = 0;
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 received += value.length;
                 loadedBytes += value.length;
                 chunks.push(value);
-                let mbDone = (loadedBytes / (1024 * 1024)).toFixed(2);
-                let mbTotal = '86.96';
-                loadingText.textContent = `LOADING... ${mbDone} MB / ${mbTotal} MB`;
+                loadingText.textContent = 'LOADING... ' + (loadedBytes / (1024 * 1024)).toFixed(2) + ' MB / 86.96 MB';
             }
-            let fullBuffer = new Uint8Array(received);
-            let offset = 0;
-            for (let chunk of chunks) {
-                fullBuffer.set(chunk, offset);
-                offset += chunk.length;
-            }
-            return fullBuffer.buffer;
+            let buf = new Uint8Array(received), offset = 0;
+            for (let c of chunks) { buf.set(c, offset); offset += c.length; }
+            return buf.buffer;
         }
 
-        async function mergeFiles(fileParts, cacheKey) {
-            const buffers = await Promise.all(
-                fileParts.map(part => fetchWithProgress(part))
-            );
-            const mergedBlob = new Blob(buffers);
-            return URL.createObjectURL(mergedBlob);
+        async function mergeFiles(parts) {
+            const buffers = await Promise.all(parts.map(p => fetchWithProgress(p)));
+            return URL.createObjectURL(new Blob(buffers));
         }
 
         function getParts(file, start, end) {
             let parts = [];
-            for (let i = start; i <= end; i++) {
-                parts.push(file + ".part" + i);
-            }
+            for (let i = start; i <= end; i++) parts.push(file + ".part" + i);
             return parts;
         }
 
         (async () => {
             const [dataUrl, wasmUrl] = await Promise.all([
-                mergeFiles(getParts("Build/CloverPit.data", 1, 3), "CloverPit.data"),
-                mergeFiles(getParts("Build/CloverPit.wasm", 1, 3), "CloverPit.wasm"),
+                mergeFiles(getParts("Build/CloverPit.data", 1, 3)),
+                mergeFiles(getParts("Build/CloverPit.wasm", 1, 3)),
             ]);
 
-            var container = document.querySelector("#unity-container");
             var canvas = document.querySelector("#unity-canvas");
             var loadingBar = document.querySelector("#unity-loading-bar");
             var progressBarFull = document.querySelector("#unity-progress-bar-full");
-            var warningBanner = document.querySelector("#unity-warning");
 
-            function unityShowBanner(msg, type) {
-                console.log('[Unity] ' + type + ': ' + msg);
-            }
-
-            var buildUrl = "Build";
-            var loaderUrl = buildUrl + "/CloverPit.loader.js";
             var config = {
                 arguments: [],
                 dataUrl: dataUrl,
-                frameworkUrl: buildUrl + "/CloverPit.framework.js",
+                frameworkUrl: "Build/CloverPit.framework.js",
                 codeUrl: wasmUrl,
                 streamingAssetsUrl: "StreamingAssets",
                 companyName: "Panik Arcade",
                 productName: "CloverPit",
                 productVersion: "1.3",
-                showBanner: unityShowBanner,
+                showBanner: function (msg, type) { console.log('[Unity] ' + type + ': ' + msg); },
 
-                // ===== SAVE SYSTEM CONFIG =====
-                // This tells Unity to automatically sync Application.persistentDataPath
-                // writes to IndexedDB so saves persist across sessions.
+                // KEY: tells the framework to auto-persist /idbfs writes to IndexedDB
                 autoSyncPersistentDataPath: true,
             };
 
@@ -703,7 +552,7 @@
             loadingBar.style.display = "block";
 
             var script = document.createElement("script");
-            script.src = loaderUrl;
+            script.src = "Build/CloverPit.loader.js";
             script.onload = () => {
                 createUnityInstance(canvas, config, (progress) => {
                     progressBarFull.style.width = 100 * progress + "%";
@@ -712,30 +561,25 @@
                     loadingBar.style.display = "none";
                     loadingText.remove();
 
-                    // Show save controls after game loads
+                    // Show save UI
                     document.getElementById('save-controls').classList.add('visible');
                     document.getElementById('autosave-indicator').classList.add('visible');
 
-                    // Start auto-save timer
+                    // Start periodic auto-sync
                     startAutoSave();
 
-                    // Initial sync from IndexedDB → memory (populate)
-                    // This ensures any previously saved data is loaded into the FS
+                    // Log FS availability for debugging
                     setTimeout(() => {
-                        try {
-                            if (typeof FS !== 'undefined' && typeof FS.syncfs === 'function') {
-                                FS.syncfs(true, function (err) {
-                                    if (err) {
-                                        console.warn('[SaveSystem] Initial FS.syncfs(populate) warning:', err);
-                                    } else {
-                                        console.log('[SaveSystem] Initial FS populated from IndexedDB');
-                                    }
-                                });
-                            }
-                        } catch (e) {
-                            console.warn('[SaveSystem] Initial populate error:', e);
+                        const fs = getFS();
+                        if (fs) {
+                            console.log('[SaveSystem] ✓ FS available via unityInstance.Module.FS');
+                            console.log('[SaveSystem] ✓ /idbfs mounted, autoSyncPersistentDataPath enabled');
+                            showSaveStatus('Save system ready!', 'success');
+                        } else {
+                            console.warn('[SaveSystem] ✗ Could not access FS — saves may not work');
+                            showSaveStatus('Warning: FS not accessible', 'error');
                         }
-                    }, 2000);
+                    }, 3000);
 
                     console.log('[SaveSystem] Game loaded, save system active');
                 }).catch((message) => {
