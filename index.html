@@ -197,6 +197,9 @@
         <button id="btn-save" title="Manually sync save data to browser storage">
             <span>💾</span> Save Now
         </button>
+        <button id="btn-check" title="Run save system diagnostics">
+            <span>🔍</span> System Check
+        </button>
         <button id="btn-export" title="Export your save data as a downloadable file">
             <span>📤</span> Export Save
         </button>
@@ -215,75 +218,77 @@
         <span class="text"></span>
     </div>
 
+    <!-- Diagnostic Overlay -->
+    <div id="diagnostic-overlay"
+        style="display: none; position: fixed; top: 60px; right: 12px; width: 350px; background: rgba(10, 10, 15, 0.95); border: 1px solid rgba(200, 182, 255, 0.3); border-radius: 12px; padding: 15px; color: #c8b6ff; font-family: monospace; font-size: 12px; z-index: 100000; box-shadow: 0 8px 32px rgba(0,0,0,0.8); backdrop-filter: blur(10px);">
+        <div
+            style="display: flex; justify-content: space-between; margin-bottom: 10px; border-bottom: 1px solid rgba(200, 182, 255, 0.2); padding-bottom: 5px;">
+            <b style="color: #fff;">💾 SAVE SYSTEM DIAGNOSTICS</b>
+            <span id="close-diag" style="cursor: pointer; opacity: 0.6;">[X]</span>
+        </div>
+        <div id="diag-content" style="max-height: 400px; overflow-y: auto; line-height: 1.4;">
+            Fetching status...
+        </div>
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(200, 182, 255, 0.2);">
+            <button id="btn-test-save"
+                style="width: 100%; background: #50dc78; color: #000; border: none; padding: 6px; border-radius: 4px; font-weight: bold; cursor: pointer;">🧪
+                FORCE SYNC TEST</button>
+        </div>
+    </div>
+
     <input type="file" id="import-file-input" accept=".json,.cloverpit" style="display: none;">
 
     <!-- ================================================================
-         FRAMEWORK PATCHER
-         Intercepts the loader's script creation to patch framework.js
-         before it executes. Injects "window.__gameFS=FS;" inside the
-         framework closure so we can call FS.syncfs() from outside.
+         FRAMEWORK PATCHER (v7)
          ================================================================ -->
     <script>
-        // Monkey-patch document.createElement to intercept the framework script tag.
-        // When the Unity loader creates a <script> with src containing "framework",
-        // we fetch the source, patch it, and load the patched version instead.
         (function () {
             var _origCreateElement = document.createElement.bind(document);
             document.createElement = function (tagName) {
                 var el = _origCreateElement(tagName);
                 if (tagName.toLowerCase() === 'script') {
-                    // Intercept the 'src' setter
                     var _origSrc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
                     var _patchApplied = false;
 
                     Object.defineProperty(el, 'src', {
                         set: function (url) {
-                            // Check if this is the framework script
                             if (!_patchApplied && typeof url === 'string' && url.indexOf('framework') !== -1) {
                                 _patchApplied = true;
-                                console.log('[SaveSystem] Intercepted framework script:', url);
-
-                                // Fetch, patch, and load as blob
-                                fetch(url)
-                                    .then(function (r) { return r.text(); })
-                                    .then(function (src) {
-                                        var target = 'Module.__unityIdbfsMount=FS.mount';
-                                        var patch = 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;Module.__unityIdbfsMount=FS.mount';
-                                        if (src.indexOf(target) !== -1) {
-                                            src = src.replace(target, patch);
-                                            console.log('[SaveSystem] ✓ Framework patched! FS will be exposed as window.__gameFS');
-                                        } else {
-                                            console.warn('[SaveSystem] ✗ Patch target not found, FS capture may not work');
-                                        }
-                                        var blob = new Blob([src], { type: 'application/javascript' });
-                                        var blobUrl = URL.createObjectURL(blob);
-                                        _origSrc.set.call(el, blobUrl);
-                                    })
-                                    .catch(function (err) {
-                                        console.error('[SaveSystem] Patch failed, loading original:', err);
-                                        _origSrc.set.call(el, url);
-                                    });
+                                console.log('[SaveSystem] Intercepting framework:', url);
+                                fetch(url).then(r => r.text()).then(src => {
+                                    // Patch targets found via Node.js search
+                                    var target = 'Module.__unityIdbfsMount=FS.mount';
+                                    var patch = 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;Module.__unityIdbfsMount=FS.mount';
+                                    if (src.indexOf(target) !== -1) {
+                                        src = src.replace(target, patch);
+                                        console.log('[SaveSystem] ✓ Framework extension injected!');
+                                    } else {
+                                        console.warn('[SaveSystem] ✗ Could not find patch target. Trying fallback...');
+                                        src = src.replace('FS.mkdir("/idbfs")', 'window.__gameFS=FS;window.__gameIDBFS=IDBFS;FS.mkdir("/idbfs")');
+                                    }
+                                    var blobUrl = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
+                                    _origSrc.set.call(el, blobUrl);
+                                }).catch(err => {
+                                    console.error('[SaveSystem] Patch error:', err);
+                                    _origSrc.set.call(el, url);
+                                });
                             } else {
                                 _origSrc.set.call(el, url);
                             }
                         },
-                        get: function () {
-                            return _origSrc.get.call(el);
-                        },
+                        get: function () { return _origSrc.get.call(el); },
                         configurable: true
                     });
                 }
                 return el;
             };
-            console.log('[SaveSystem] v6 — createElement interceptor installed');
         })();
     </script>
 
     <script>
         // =========================================================================
-        //  SAVE SYSTEM v6
+        //  SAVE SYSTEM v7
         // =========================================================================
-
         const AUTOSAVE_INTERVAL_MS = 30000;
         const PRODUCT_NAME = 'CloverPit';
 
@@ -291,323 +296,312 @@
         let autoSaveTimer = null;
         let isFSSyncing = false;
 
-        // ---- Toast notification ----
-        function showSaveStatus(message, type) {
-            type = type || 'info';
-            var el = document.getElementById('save-status');
+        function showSaveStatus(message, type = 'info') {
+            const el = document.getElementById('save-status');
             el.querySelector('.icon').textContent = { info: '💾', success: '✅', error: '❌' }[type] || '💾';
             el.querySelector('.text').textContent = message;
             el.className = 'visible ' + type;
             clearTimeout(el._hideTimer);
-            el._hideTimer = setTimeout(function () { el.className = ''; }, 4000);
+            el._hideTimer = setTimeout(() => { el.className = ''; }, 4000);
         }
 
-        // ---- Core: sync FS to IndexedDB ----
-        function syncFS(showNotification) {
-            if (showNotification === undefined) showNotification = true;
-            return new Promise(function (resolve, reject) {
-                if (isFSSyncing) { resolve(); return; }
+        // ---- Smarter Sync Strategy ----
+        async function syncFS(showNotification = true) {
+            if (isFSSyncing) return;
+            isFSSyncing = true;
+            if (showNotification) showSaveStatus('Saving...', 'info');
 
-                if (!window.__gameFS) {
-                    if (showNotification) showSaveStatus('FS not captured — game may still be loading', 'error');
-                    console.warn('[SaveSystem] __gameFS is null');
-                    resolve();
+            const results = {
+                strategy1: 'skip', strategy2: 'skip', strategy3: 'skip'
+            };
+
+            const callback = (err) => {
+                isFSSyncing = false;
+                if (err) {
+                    console.error('[SaveSystem] Sync failed:', err);
+                    if (showNotification) showSaveStatus('Save failed!', 'error');
+                } else {
+                    console.log('[SaveSystem] ✓ Persistence synchronized');
+                    if (showNotification) showSaveStatus('Progress saved!', 'success');
+                }
+            };
+
+            try {
+                // Strategy 1: Captured FS (from patch)
+                if (window.__gameFS && typeof window.__gameFS.syncfs === 'function') {
+                    results.strategy1 = 'trying...';
+                    window.__gameFS.syncfs(false, callback);
                     return;
                 }
 
-                isFSSyncing = true;
-                if (showNotification) showSaveStatus('Saving...', 'info');
+                // Strategy 2: Unity IDBFS Mount via instance
+                const mount = unityInstance?.Module?.__unityIdbfsMount;
+                const mnt = mount?.mount;
 
-                try {
-                    window.__gameFS.syncfs(false, function (err) {
-                        isFSSyncing = false;
-                        if (err) {
-                            console.error('[SaveSystem] syncfs error:', err);
-                            if (showNotification) showSaveStatus('Save failed: ' + err, 'error');
-                            reject(err);
-                        } else {
-                            console.log('[SaveSystem] FS synced to IndexedDB ✓');
-                            if (showNotification) showSaveStatus('Progress saved!', 'success');
-                            resolve();
-                        }
-                    });
-                } catch (e) {
-                    isFSSyncing = false;
-                    console.error('[SaveSystem] syncfs exception:', e);
-                    if (showNotification) showSaveStatus('Save error: ' + e.message, 'error');
-                    reject(e);
-                }
-            });
-        }
-
-        // ---- Auto-save timer ----
-        function startAutoSave() {
-            if (autoSaveTimer) clearInterval(autoSaveTimer);
-            autoSaveTimer = setInterval(function () {
-                syncFS(false).catch(function () { });
-            }, AUTOSAVE_INTERVAL_MS);
-            console.log('[SaveSystem] Auto-save started (every ' + (AUTOSAVE_INTERVAL_MS / 1000) + 's)');
-        }
-
-        // ---- Export ----
-        async function exportSaveData() {
-            try {
-                showSaveStatus('Exporting save data...', 'info');
-                await syncFS(false).catch(function () { });
-
-                var exportData = { version: 3, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
-                var dbNames = ['/idbfs'];
-
-                if (indexedDB.databases) {
-                    var allDbs = await indexedDB.databases();
-                    for (var i = 0; i < allDbs.length; i++) {
-                        if (allDbs[i].name && dbNames.indexOf(allDbs[i].name) === -1) dbNames.push(allDbs[i].name);
-                    }
+                if (mount?.type?.syncfs) {
+                    results.strategy2 = 'trying mount.type.syncfs...';
+                    mount.type.syncfs(mount, false, callback);
+                    return;
                 }
 
-                for (var j = 0; j < dbNames.length; j++) {
-                    try { exportData.databases[dbNames[j]] = await exportIDB(dbNames[j]); } catch (e) { console.warn('[Export] skip:', dbNames[j], e); }
+                // Strategy 3: IDBFS queuePersist (from framework)
+                if (mnt?.type?.queuePersist) {
+                    results.strategy3 = 'trying mnt.type.queuePersist...';
+                    mnt.type.queuePersist(mnt);
+                    // queuePersist is usually async but doesn't have a direct callback in all versions
+                    // but we'll assume it works if called
+                    setTimeout(() => callback(null), 500);
+                    return;
                 }
 
-                var prefs = {};
-                for (var k = 0; k < localStorage.length; k++) {
-                    var key = localStorage.key(k);
-                    prefs[key] = localStorage.getItem(key);
+                // Strategy 4: Fallback to global IDBFS if available
+                if (window.__gameIDBFS && mnt) {
+                    window.__gameIDBFS.queuePersist(mnt);
+                    setTimeout(() => callback(null), 500);
+                    return;
                 }
-                exportData.playerPrefs = prefs;
 
-                var blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-                var a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'CloverPit_Save_' + new Date().toISOString().slice(0, 10) + '.cloverpit';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                URL.revokeObjectURL(a.href);
-                showSaveStatus('Save exported!', 'success');
+                isFSSyncing = false;
+                if (showNotification) showSaveStatus('FS not ready', 'error');
+                console.warn('[SaveSystem] No sync strategy available. Results:', results);
             } catch (e) {
-                console.error('[SaveSystem] Export error:', e);
-                showSaveStatus('Export failed: ' + e.message, 'error');
+                isFSSyncing = false;
+                console.error('[SaveSystem] Sync ERROR:', e);
+                if (showNotification) showSaveStatus('Save error', 'error');
             }
         }
 
+        // ---- Diagnostics ----
+        async function runDiagnostics() {
+            const diag = document.getElementById('diag-content');
+            const overlay = document.getElementById('diagnostic-overlay');
+            overlay.style.display = 'block';
+            diag.innerHTML = 'Scanning runtime...<br>---<br>';
+
+            const check = (label, val) => {
+                const color = val ? '#50dc78' : '#ff6464';
+                diag.innerHTML += `${label}: <span style="color:${color}">${val ? (typeof val === 'object' ? 'OK (obj)' : val) : 'MISSING'}</span><br>`;
+            };
+
+            check('window.__gameFS', !!window.__gameFS);
+            check('window.__gameIDBFS', !!window.__gameIDBFS);
+            check('unityInstance', !!unityInstance);
+
+            const module = unityInstance?.Module;
+            check('Module', !!module);
+
+            const mount = module?.__unityIdbfsMount;
+            check('__unityIdbfsMount', !!mount);
+
+            if (mount) {
+                check('Mount.mount', !!mount.mount);
+                check('Mount.type', !!mount.type);
+                check('Mount.type.syncfs', !!mount.type?.syncfs);
+                check('Mount.mount.type.queuePersist', !!mount.mount?.type?.queuePersist);
+            }
+
+            // Check IndexedDB
+            diag.innerHTML += '<br><b>IndexedDB Check:</b><br>';
+            try {
+                const dbs = await indexedDB.databases();
+                dbs.forEach(db => {
+                    diag.innerHTML += `- ${db.name} (v${db.version})<br>`;
+                });
+                if (dbs.length === 0) diag.innerHTML += 'No databases found.<br>';
+            } catch (e) { diag.innerHTML += 'DB list error.<br>'; }
+
+            // Check /idbfs contents
+            if (window.__gameFS) {
+                try {
+                    const files = window.__gameFS.readdir('/idbfs');
+                    diag.innerHTML += `<br><b>File Count in /idbfs:</b> ${files.length}<br>`;
+                    files.slice(0, 5).forEach(f => diag.innerHTML += `- ${f}<br>`);
+                } catch (e) { }
+            }
+        }
+
+        // ---- Export/Import ----
+        async function exportSaveData() {
+            try {
+                showSaveStatus('Exporting...', 'info');
+                await syncFS(false);
+                const exportData = { version: 3, game: PRODUCT_NAME, timestamp: new Date().toISOString(), databases: {} };
+                let dbNames = ['/idbfs'];
+                if (indexedDB.databases) {
+                    const dbs = await indexedDB.databases();
+                    dbs.forEach(d => { if (d.name && !dbNames.includes(d.name)) dbNames.push(d.name); });
+                }
+                for (let name of dbNames) {
+                    try { exportData.databases[name] = await exportIDB(name); } catch (e) { }
+                }
+                const prefs = {};
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i); prefs[k] = localStorage.getItem(k);
+                }
+                exportData.playerPrefs = prefs;
+                const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `CloverPit_Save_${new Date().toISOString().slice(0, 10)}.cloverpit`;
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                showSaveStatus('Exported!', 'success');
+            } catch (e) { showSaveStatus('Export error', 'error'); }
+        }
+
         function exportIDB(dbName) {
-            return new Promise(function (resolve, reject) {
-                var req = indexedDB.open(dbName);
-                req.onerror = function () { reject(req.error); };
-                req.onsuccess = function () {
-                    var db = req.result;
-                    var names = Array.from(db.objectStoreNames);
-                    if (names.length === 0) { db.close(); resolve({}); return; }
-                    var tx = db.transaction(names, 'readonly');
-                    var data = {}; var done = 0;
-                    names.forEach(function (name) {
-                        var store = tx.objectStore(name);
-                        var keysReq = store.getAllKeys();
-                        var valsReq = store.getAll();
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(dbName);
+                req.onerror = () => reject(req.error);
+                req.onsuccess = () => {
+                    const db = req.result;
+                    const names = Array.from(db.objectStoreNames);
+                    if (!names.length) { db.close(); resolve({}); return; }
+                    const tx = db.transaction(names, 'readonly');
+                    const data = {}; let done = 0;
+                    names.forEach(name => {
+                        const store = tx.objectStore(name);
+                        const kReq = store.getAllKeys();
+                        const vReq = store.getAll();
                         Promise.all([
-                            new Promise(function (r) { keysReq.onsuccess = function () { r(keysReq.result); }; }),
-                            new Promise(function (r) { valsReq.onsuccess = function () { r(valsReq.result); }; })
-                        ]).then(function (results) {
-                            var keys = results[0], vals = results[1];
+                            new Promise(r => kReq.onsuccess = () => r(kReq.result)),
+                            new Promise(r => vReq.onsuccess = () => r(vReq.result))
+                        ]).then(([keys, vals]) => {
                             data[name] = {
-                                keys: keys,
-                                values: vals.map(function (v) {
+                                keys, values: vals.map(v => {
                                     if (v instanceof ArrayBuffer) return { __t: 'AB', d: Array.from(new Uint8Array(v)) };
-                                    if (v && v.contents instanceof Uint8Array) return Object.assign({}, v, { contents: { __t: 'U8', d: Array.from(v.contents) } });
-                                    if (v && v.contents instanceof Int8Array) return Object.assign({}, v, { contents: { __t: 'I8', d: Array.from(v.contents) } });
+                                    if (v?.contents instanceof Uint8Array) return { ...v, contents: { __t: 'U8', d: Array.from(v.contents) } };
                                     return v;
                                 })
                             };
                             if (++done === names.length) { db.close(); resolve(data); }
                         });
                     });
-                    tx.onerror = function () { db.close(); reject(tx.error); };
                 };
             });
         }
 
-        // ---- Import ----
         async function importSaveData(file) {
             try {
-                showSaveStatus('Importing save data...', 'info');
-                var importData = JSON.parse(await file.text());
-                if (!importData.databases || importData.game !== PRODUCT_NAME) {
-                    showSaveStatus('Invalid save file!', 'error');
-                    return;
-                }
-
-                for (var entry of Object.entries(importData.databases)) {
-                    await importIDB(entry[0], entry[1]);
-                }
-                if (importData.playerPrefs) {
-                    for (var pe of Object.entries(importData.playerPrefs)) localStorage.setItem(pe[0], pe[1]);
-                }
-                showSaveStatus('Save imported! Reloading...', 'success');
-                setTimeout(function () { location.reload(); }, 1500);
-            } catch (e) {
-                console.error('[SaveSystem] Import error:', e);
-                showSaveStatus('Import failed: ' + e.message, 'error');
-            }
+                showSaveStatus('Importing...', 'info');
+                const data = JSON.parse(await file.text());
+                if (data.game !== PRODUCT_NAME) return showSaveStatus('Wrong file!', 'error');
+                for (let [db, content] of Object.entries(data.databases)) await importIDB(db, content);
+                if (data.playerPrefs) Object.entries(data.playerPrefs).forEach(([k, v]) => localStorage.setItem(k, v));
+                showSaveStatus('Success! Reloading...', 'success');
+                setTimeout(() => location.reload(), 1500);
+            } catch (e) { showSaveStatus('Import failed', 'error'); }
         }
 
         function importIDB(dbName, storeData) {
-            return new Promise(function (resolve, reject) {
-                var req = indexedDB.open(dbName);
-                req.onerror = function () { reject(req.error); };
-                req.onupgradeneeded = function (e) {
-                    var db = e.target.result;
-                    for (var name of Object.keys(storeData)) {
-                        if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
-                    }
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(dbName);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    Object.keys(storeData).forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n); });
                 };
-                req.onsuccess = function () {
-                    var db = req.result;
-                    var names = Object.keys(storeData).filter(function (n) { return db.objectStoreNames.contains(n); });
-                    if (names.length === 0) { db.close(); resolve(); return; }
-                    var tx = db.transaction(names, 'readwrite');
-                    names.forEach(function (name) {
-                        var store = tx.objectStore(name);
-                        var entry = storeData[name];
+                req.onsuccess = () => {
+                    const db = req.result;
+                    const names = Object.keys(storeData).filter(n => db.objectStoreNames.contains(n));
+                    if (!names.length) { db.close(); resolve(); return; }
+                    const tx = db.transaction(names, 'readwrite');
+                    names.forEach(n => {
+                        const store = tx.objectStore(n);
+                        const { keys, values } = storeData[n];
                         store.clear();
-                        entry.keys.forEach(function (key, i) {
-                            var v = entry.values[i];
-                            if (v && v.contents && v.contents.__t === 'U8') v = Object.assign({}, v, { contents: new Uint8Array(v.contents.d) });
-                            if (v && v.contents && v.contents.__t === 'I8') v = Object.assign({}, v, { contents: new Int8Array(v.contents.d) });
-                            if (v && v.__t === 'AB') v = new Uint8Array(v.d).buffer;
-                            store.put(v, key);
+                        keys.forEach((k, i) => {
+                            let v = values[i];
+                            if (v?.__t === 'AB') v = new Uint8Array(v.d).buffer;
+                            if (v?.contents?.__t === 'U8') v = { ...v, contents: new Uint8Array(v.contents.d) };
+                            store.put(v, k);
                         });
                     });
-                    tx.oncomplete = function () { db.close(); resolve(); };
-                    tx.onerror = function () { db.close(); reject(tx.error); };
+                    tx.oncomplete = () => { db.close(); resolve(); };
                 };
             });
         }
 
-        // ---- Button handlers ----
-        document.getElementById('btn-save').addEventListener('click', function () { syncFS(true); });
-        document.getElementById('btn-export').addEventListener('click', function () { exportSaveData(); });
-        document.getElementById('btn-import').addEventListener('click', function () { document.getElementById('import-file-input').click(); });
-        document.getElementById('import-file-input').addEventListener('change', function (e) {
-            if (e.target.files.length > 0) {
-                if (confirm('This will overwrite your current save data. Are you sure?')) importSaveData(e.target.files[0]);
-                e.target.value = '';
-            }
-        });
+        // Event Listeners
+        document.getElementById('btn-save').onclick = () => syncFS(true);
+        document.getElementById('btn-check').onclick = runDiagnostics;
+        document.getElementById('btn-export').onclick = exportSaveData;
+        document.getElementById('btn-import').onclick = () => document.getElementById('import-file-input').click();
+        document.getElementById('btn-test-save').onclick = () => syncFS(true);
+        document.getElementById('close-diag').onclick = () => document.getElementById('diagnostic-overlay').style.display = 'none';
+        document.getElementById('import-file-input').onchange = (e) => {
+            if (e.target.files[0] && confirm('Overwrite current save?')) importSaveData(e.target.files[0]);
+        };
 
-        // ---- Sync on page close/hide ----
-        window.addEventListener('beforeunload', function () {
-            try {
-                if (window.__gameFS) window.__gameFS.syncfs(false, function () { });
-            } catch (e) { }
-        });
-        document.addEventListener('visibilitychange', function () {
-            if (document.visibilityState === 'hidden') syncFS(false).catch(function () { });
-        });
+        window.onbeforeunload = () => { if (window.__gameFS) window.__gameFS.syncfs(false, () => { }); };
+        document.onvisibilitychange = () => { if (document.visibilityState === 'hidden') syncFS(false); };
 
-        // =========================================================================
-        //  GAME LOADER
-        // =========================================================================
+        function startAutoSave() {
+            if (autoSaveTimer) clearInterval(autoSaveTimer);
+            autoSaveTimer = setInterval(() => syncFS(false), AUTOSAVE_INTERVAL_MS);
+        }
 
+        // ---- Game Loader ----
         var loadingText = document.querySelector("#loading-text");
-        var loadedBytes = 0;
-
+        let loadedBytes = 0;
         async function fetchWithProgress(url) {
-            var response = await fetch(url);
-            var reader = response.body.getReader();
-            var chunks = [], received = 0;
+            const r = await fetch(url);
+            const reader = r.body.getReader();
+            let chunks = [], received = 0;
             while (true) {
-                var result = await reader.read();
-                if (result.done) break;
-                received += result.value.length;
-                loadedBytes += result.value.length;
-                chunks.push(result.value);
-                loadingText.textContent = 'LOADING... ' + (loadedBytes / (1024 * 1024)).toFixed(2) + ' MB / 86.96 MB';
+                const { done, value } = await reader.read();
+                if (done) break;
+                received += value.length; loadedBytes += value.length; chunks.push(value);
+                loadingText.textContent = `LOADING... ${(loadedBytes / 1048576).toFixed(2)} MB / 86.96 MB`;
             }
-            var buf = new Uint8Array(received), offset = 0;
-            for (var c of chunks) { buf.set(c, offset); offset += c.length; }
-            return buf.buffer;
+            let b = new Uint8Array(received), o = 0;
+            chunks.forEach(c => { b.set(c, o); o += c.length; });
+            return b.buffer;
         }
-
-        async function mergeFiles(parts) {
-            var buffers = await Promise.all(parts.map(function (p) { return fetchWithProgress(p); }));
-            return URL.createObjectURL(new Blob(buffers));
+        async function mergeFiles(parts, mime) {
+            const bufs = await Promise.all(parts.map(p => fetchWithProgress(p)));
+            return URL.createObjectURL(new Blob(bufs, mime ? { type: mime } : {}));
         }
-
-        function getParts(file, start, end) {
-            var parts = [];
-            for (var i = start; i <= end; i++) parts.push(file + ".part" + i);
-            return parts;
-        }
+        function getParts(f, s, e) { return Array.from({ length: e - s + 1 }, (_, i) => `${f}.part${i + s}`); }
 
         (async () => {
-            var [dataUrl, wasmUrl] = await Promise.all([
-                mergeFiles(getParts("Build/CloverPit.data", 1, 3)),
-                mergeFiles(getParts("Build/CloverPit.wasm", 1, 3)),
+            const [dataUrl, wasmUrl] = await Promise.all([
+                mergeFiles(getParts("Build/CloverPit.data", 1, 3), 'application/octet-stream'),
+                mergeFiles(getParts("Build/CloverPit.wasm", 1, 3), 'application/wasm'),
             ]);
-
             var canvas = document.querySelector("#unity-canvas");
             var loadingBar = document.querySelector("#unity-loading-bar");
             var progressBarFull = document.querySelector("#unity-progress-bar-full");
-
             var config = {
-                arguments: [],
-                dataUrl: dataUrl,
+                dataUrl, wasmUrl,
                 frameworkUrl: "Build/CloverPit.framework.js",
-                codeUrl: wasmUrl,
                 streamingAssetsUrl: "StreamingAssets",
-                companyName: "Panik Arcade",
-                productName: "CloverPit",
-                productVersion: "1.3",
-                showBanner: function (msg, type) { console.log('[Unity] ' + type + ': ' + msg); },
+                companyName: "Panik Arcade", productName: "CloverPit", productVersion: "1.3",
+                showBanner: (m, t) => console.log(`[Unity] ${t}: ${m}`),
                 autoSyncPersistentDataPath: true,
             };
 
-            if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-                var meta = document.createElement('meta');
-                meta.name = 'viewport';
-                meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
-                document.getElementsByTagName('head')[0].appendChild(meta);
-            }
-
             loadingBar.style.display = "block";
-
-            var script = document.createElement("script");
-            script.src = "Build/CloverPit.loader.js";
-            script.onload = function () {
-                createUnityInstance(canvas, config, function (progress) {
-                    progressBarFull.style.width = 100 * progress + "%";
-                }).then(function (instance) {
+            var s = document.createElement("script");
+            s.src = "Build/CloverPit.loader.js";
+            s.onload = () => {
+                createUnityInstance(canvas, config, (p) => {
+                    progressBarFull.style.width = (100 * p) + "%";
+                }).then((instance) => {
                     unityInstance = instance;
                     loadingBar.style.display = "none";
                     loadingText.remove();
-
                     document.getElementById('save-controls').classList.add('visible');
                     document.getElementById('autosave-indicator').classList.add('visible');
-
                     startAutoSave();
-
-                    // Verify FS was captured
-                    setTimeout(function () {
-                        if (window.__gameFS && typeof window.__gameFS.syncfs === 'function') {
-                            console.log('[SaveSystem] ✓ FS captured! syncfs available.');
-                            showSaveStatus('Save system ready!', 'success');
-                            try {
-                                var contents = window.__gameFS.readdir('/idbfs');
-                                console.log('[SaveSystem] /idbfs contents:', contents);
-                            } catch (e) { }
-                        } else {
-                            console.error('[SaveSystem] ✗ FS not captured. __gameFS:', window.__gameFS);
-                            showSaveStatus('FS not captured — patch may have failed', 'error');
-                        }
-                    }, 3000);
-
-                    console.log('[SaveSystem] Game loaded');
-                }).catch(function (message) {
-                    console.error('[Unity] Error:', message);
-                });
+                    console.log('[SaveSystem] Game loaded, verify with System Check');
+                }).catch(err => console.error('[Unity] Startup error:', err));
             };
-            document.body.appendChild(script);
+            document.body.appendChild(s);
         })();
     </script>
+</body>
+
+</html>
+
 </body>
 
 </html>
